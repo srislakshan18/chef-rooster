@@ -1,5 +1,5 @@
 /* eslint-disable no-unused-vars */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 const RED   = "#C8102E";
 const DRED  = "#9B0020";
@@ -42,15 +42,15 @@ const SCRIPT_CODE =
       '1xX0kn1l3hj4MnG0MUDqYn0lZnhJKak_SLra5IlkRyzY');
     var sh = ss.getSheetByName('Sales') || ss.insertSheet('Sales');
     if(sh.getLastRow()===0){
-      sh.appendRow(['Order#','Type','Ref','Date','Time',
-        'Items','Total','Payment','Cash Rcvd','Change']);
+      sh.appendRow(['Order#','Type','Ref','Date','Time','Items',
+        'Subtotal','Discount','Total','Payment','Cash Rcvd','Change']);
     }
     var d = JSON.parse(e.postData.contents);
     d.orders.forEach(function(o){
-      var items = o.items.map(function(i){
-        return i.name+' x'+i.qty; }).join(', ');
-      sh.appendRow([o.orderNum,o.type,o.ref,o.date,o.time,
-        items,o.total,o.paymentMethod,o.amountPaid,o.change||0]);
+      var items = o.items.map(function(i){ return i.name+' x'+i.qty; }).join(', ');
+      sh.appendRow([o.orderNum,o.type,o.ref,o.date,o.time,items,
+        o.subtotal,o.discountAmount||0,o.total,
+        o.paymentMethod,o.amountPaid,o.change||0]);
     });
     return ContentService
       .createTextOutput(JSON.stringify({success:true}))
@@ -77,7 +77,21 @@ const elapsed  = iso => {
   return m<60 ? m+"m" : Math.floor(m/60)+"h "+(m%60)+"m";
 };
 
-// ─── Styles ──────────────────────────────────────────────
+// ── Logo component (uses /logo.png, falls back to emoji) ──
+function Logo({size=36, round=false}) {
+  const [err, setErr] = useState(false);
+  if(err) return <span style={{fontSize:size*0.8, lineHeight:1}}>🐓</span>;
+  return (
+    <img
+      src="/logo.png"
+      alt="Chef Rooster"
+      onError={()=>setErr(true)}
+      style={{width:size, height:size, objectFit:"contain", borderRadius: round?"50%":"8px", display:"block"}}
+    />
+  );
+}
+
+// ── Styles ────────────────────────────────────────────────
 const P = {
   page:   {display:"flex",flexDirection:"column",height:"100vh",background:"#f4f4f4",fontFamily:"'Segoe UI',system-ui,sans-serif",overflow:"hidden"},
   topbar: {background:"linear-gradient(135deg,#C8102E,#9B0020)",padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0},
@@ -87,7 +101,6 @@ const P = {
   tbBtn:  {background:"rgba(255,255,255,0.18)",border:"none",borderRadius:9,padding:"6px 12px",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:600},
 };
 
-// ─── Sub-components ───────────────────────────────────────
 function TopBar({children,onBack,right}) {
   return (
     <div style={P.topbar}>
@@ -124,7 +137,7 @@ function Numpad({value,onChange}) {
   );
 }
 
-// ─── Main App ─────────────────────────────────────────────
+// ── Main App ──────────────────────────────────────────────
 export default function App() {
 
   const [screen,    setScreen]    = useState("home");
@@ -162,17 +175,19 @@ export default function App() {
   const [clrErr,    setClrErr]    = useState("");
   const [clrFn,     setClrFn]     = useState(null);
   const [clrLabel,  setClrLabel]  = useState("");
-  // Reports lock
   const [rptLocked, setRptLocked] = useState(true);
   const [rptPin,    setRptPin]    = useState("");
   const [rptPinErr, setRptPinErr] = useState("");
-  // Price management
   const [customPrices, setCustomPrices] = useState({});
   const [priceEdits,   setPriceEdits]   = useState({});
   const [priceCat,     setPriceCat]     = useState(Object.keys(BASE_MENU)[0]);
   const [priceSaved,   setPriceSaved]   = useState(false);
+  // Discount states
+  const [discType,  setDiscType]  = useState("percent"); // "percent" | "fixed"
+  const [discValue, setDiscValue] = useState("");
+  const [showDisc,  setShowDisc]  = useState(false);
 
-  // ── Load ────────────────────────────────────────────────
+  // ── Load ──────────────────────────────────────────────
   useEffect(()=>{
     const t=localStorage.getItem("cr_tables");
     if(t){const p=JSON.parse(t);if(Array.isArray(p)&&p.length===NUM_TABLES)setTables(p);}
@@ -194,14 +209,6 @@ export default function App() {
     setLoaded(true);
   },[]);
 
-  // ── Auto-print receipt ──────────────────────────────────
-  useEffect(()=>{
-    if(screen==="receipt"&&lastOrder){
-      const t=setTimeout(()=>window.print(),1000);
-      return ()=>clearTimeout(t);
-    }
-  },[screen,lastOrder]);
-
   // ── Save helpers ────────────────────────────────────────
   const saveTbls     = t  => localStorage.setItem("cr_tables",    JSON.stringify(t));
   const saveTAs      = ta => localStorage.setItem("cr_takeaways", JSON.stringify(ta));
@@ -209,32 +216,28 @@ export default function App() {
   const saveTillSess = s  => localStorage.setItem("cr_till_sess", JSON.stringify(s));
   const saveTillHist = h  => localStorage.setItem("cr_till_hist", JSON.stringify(h));
 
-  // ── Price helpers ───────────────────────────────────────
-  const getPrice = item => customPrices[item.id] !== undefined ? customPrices[item.id] : item.price;
+  // ── Price helpers ────────────────────────────────────────
+  const getPrice = item => customPrices[item.id]!==undefined ? customPrices[item.id] : item.price;
 
-  const savePrices = () => {
-    const merged = {...customPrices,...priceEdits};
-    setCustomPrices(merged);
-    localStorage.setItem("cr_prices",JSON.stringify(merged));
-    setPriceSaved(true);
-    setTimeout(()=>setPriceSaved(false),2000);
+  const savePrices=()=>{
+    const merged={...customPrices,...priceEdits};
+    setCustomPrices(merged); localStorage.setItem("cr_prices",JSON.stringify(merged));
+    setPriceSaved(true); setTimeout(()=>setPriceSaved(false),2000);
   };
+  const resetPrices=()=>{setCustomPrices({});setPriceEdits({});localStorage.removeItem("cr_prices");};
 
-  const resetPrices = () => {
-    setCustomPrices({});setPriceEdits({});
-    localStorage.removeItem("cr_prices");
-    setPriceSaved(false);
-  };
+  // ── Discount calc ────────────────────────────────────────
+  const cartSubtotal = useCallback((c)=>c.reduce((s,i)=>s+i.price*i.qty,0),[]);
 
-  // ── Reports lock ────────────────────────────────────────
-  const doRptUnlock = ()=>{
+  // ── Reports lock ─────────────────────────────────────────
+  const doRptUnlock=()=>{
     if(rptPin==="2222"){setRptLocked(false);setRptPin("");setRptPinErr("");}
     else setRptPinErr("Incorrect password.");
   };
-  const goReports = ()=>{ setSyncMsg(""); setRptLocked(true); setRptPin(""); setRptPinErr(""); setScreen("reports"); };
-  const leaveReports = ()=>{ setRptLocked(true); setScreen("home"); };
+  const goReports=()=>{setSyncMsg("");setRptLocked(true);setRptPin("");setRptPinErr("");setScreen("reports");};
+  const leaveReports=()=>{setRptLocked(true);setScreen("home");};
 
-  // ── Auth-protected clear ────────────────────────────────
+  // ── Auth-protected clear ─────────────────────────────────
   const askClear=(label,fn)=>{setClrLabel(label);setClrFn(()=>fn);setClrPass("");setClrErr("");setClrModal(true);};
   const doClr=()=>{
     if(clrPass==="2222"){clrFn&&clrFn();setClrModal(false);setClrPass("");setClrErr("");setClrFn(null);}
@@ -242,19 +245,28 @@ export default function App() {
   };
   const closeClearModal=()=>{setClrModal(false);setClrPass("");setClrErr("");setClrFn(null);};
 
-  // ── Cart ────────────────────────────────────────────────
+  // ── Cart ─────────────────────────────────────────────────
   const cart  = mode==="table"    ? (tables.find(t=>t.id===selTbl)?.cart||[])
               : mode==="takeaway" ? (takeaways.find(t=>t.id===selTA)?.cart||[])
               : [];
-  const total = cart.reduce((s,i)=>s+i.price*i.qty,0);
+  const subtotal = cart.reduce((s,i)=>s+i.price*i.qty,0);
+
+  // Compute discount amount
+  const discountAmount = (() => {
+    const v = parseFloat(discValue)||0;
+    if(!showDisc || v<=0) return 0;
+    if(discType==="percent") return Math.round(subtotal * v / 100);
+    return Math.min(v, subtotal);
+  })();
+  const total = subtotal - discountAmount;
   const count = cart.reduce((s,i)=>s+i.qty,0);
 
   const updTbl=(id,fn)=>setTables(p=>{const n=p.map(t=>t.id===id?fn(t):t);saveTbls(n);return n;});
   const updTA =(id,fn)=>setTakeaways(p=>{const n=p.map(t=>t.id===id?fn(t):t);saveTAs(n);return n;});
 
   const addItem=item=>{
-    const priceToUse = customPrices[item.id]!==undefined ? customPrices[item.id] : item.price;
-    const priced = {...item, price:priceToUse};
+    const dp=customPrices[item.id]!==undefined?customPrices[item.id]:item.price;
+    const priced={...item,price:dp};
     const ex=cart.find(i=>i.id===item.id);
     if(mode==="table"){
       updTbl(selTbl,t=>{
@@ -297,17 +309,26 @@ export default function App() {
       tableId:isTbl?selTbl:null,taId:!isTbl?selTA:null,
       date:d.toLocaleDateString("en-GB"),
       time:d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}),
-      items:cart.map(i=>({...i})),total,paymentMethod:method,amountPaid:paid,
-      change:method==="cash"?paid-total:0,synced:false,
+      items:cart.map(i=>({...i})),
+      subtotal,
+      discountType: discountAmount>0 ? discType : null,
+      discountValue: discountAmount>0 ? parseFloat(discValue)||0 : 0,
+      discountAmount,
+      total,
+      paymentMethod:method,amountPaid:paid,
+      change:method==="cash"?paid-total:0,
+      synced:false,
     };
     const no=[...orders,order],nc=counter+1;
     setOrders(no);setCounter(nc);setLast(order);saveOrd(no,nc);
     if(isTbl) updTbl(selTbl,t=>({...t,cart:[],openedAt:null}));
     else {const nTA=takeaways.filter(t=>t.id!==selTA);setTakeaways(nTA);saveTAs(nTA);}
+    // Reset discount
+    setDiscValue("");setShowDisc(false);setDiscType("percent");
     setScreen("receipt");
   };
 
-  // ── Till close ──────────────────────────────────────────
+  // ── Till close ────────────────────────────────────────────
   const doCloseTill=()=>{
     if(tcPass!=="2222"){setTcErr("Incorrect password. Access denied.");return;}
     const now=new Date(),tod=now.toLocaleDateString("en-GB");
@@ -333,53 +354,70 @@ export default function App() {
     setTcModal(false);setTcPass("");setTcErr("");
   };
 
-  // ── Print helpers ───────────────────────────────────────
+  // ── Print helpers ────────────────────────────────────────
   const printWin=html=>{
-    const w=window.open("","_blank","width=480,height=720");
+    const w=window.open("","_blank","width=380,height=600");
     if(!w)return;
-    w.document.write("<!DOCTYPE html><html><head><meta charset='utf-8'><title>Chef Rooster</title>"
+    w.document.write(
+      "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Chef Rooster Receipt</title>"
       +"<style>*{box-sizing:border-box;margin:0;padding:0}"
-      +"body{font-family:'Segoe UI',sans-serif;padding:16px;font-size:13px;color:#1a1a1a}"
-      +"h1{font-size:17px;font-weight:800;letter-spacing:2px;color:#C8102E}"
-      +".sub{font-size:11px;color:#888;margin-top:2px}"
-      +".dash{border-top:2px dashed #ccc;margin:10px 0}"
-      +".row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f0f0f0}"
-      +".muted{color:#888;font-size:11px}"
-      +"@media print{body{padding:4px}}</style>"
-      +"</head><body>"+html+"</body></html>");
-    w.document.close();w.focus();setTimeout(()=>{w.print();},500);
+      +"body{font-family:'Courier New',monospace;padding:12px;font-size:12px;color:#000;width:300px}"
+      +"h1{font-size:15px;font-weight:900;letter-spacing:2px;color:#000;text-align:center}"
+      +".sub{font-size:10px;color:#555;text-align:center;margin-top:2px}"
+      +".dash{border-top:1px dashed #999;margin:8px 0}"
+      +".row{display:flex;justify-content:space-between;padding:3px 0}"
+      +".muted{color:#666;font-size:10px}"
+      +"@media print{body{width:100%;padding:4px}}</style>"
+      +"</head><body>"+html+"</body></html>"
+    );
+    w.document.close();
+    w.focus();
+    // auto-print immediately
+    setTimeout(()=>{ w.print(); setTimeout(()=>w.close(),2000); },600);
   };
 
-  const receiptHeader=(isTbl,badge)=>(
-    "<div style='text-align:center;padding-bottom:12px;border-bottom:2px dashed #ccc;margin-bottom:12px'>"
-    +"<div style='font-size:24px'>🐓</div>"
-    +"<h1>CHEF ROOSTER</h1>"
-    +"<div class='sub'>"+ADDR1+"</div>"
-    +"<div class='sub'>Tel: "+TEL+"</div>"
-    +"<div style='font-size:11px;margin-top:6px;background:"+(isTbl?"#fff3f5":"#fffbeb")+";color:"+(isTbl?"#C8102E":"#d97706")+";padding:3px 10px;border-radius:6px;display:inline-block;font-weight:700'>"+badge+"</div>"
-    +"</div>"
-  );
-
-  const printOrder=o=>{
+  const buildReceiptHTML=(o)=>{
     const isTbl=o.type==="Dine In";
     const badge=isTbl?"TABLE "+o.tableId+" — DINE IN":"TAKEAWAY — "+o.ref;
-    const rows=o.items.map(it=>"<div class='row'><span>"+it.name+" x"+it.qty+"</span><span style='font-weight:700'>Rs. "+(it.price*it.qty).toLocaleString()+"</span></div>").join("");
+    const rows=o.items.map(it=>
+      "<div class='row'><span>"+it.name+" x"+it.qty+"</span><span>Rs."+((it.price||0)*it.qty).toLocaleString()+"</span></div>"
+    ).join("");
+    const discLine= (o.discountAmount>0)
+      ? "<div class='row' style='color:green'><span>Discount"+(o.discountType==="percent"?" ("+o.discountValue+"%)":"")+"</span><span>- Rs."+Number(o.discountAmount).toLocaleString()+"</span></div>"
+      : "";
     const changeLine=o.paymentMethod==="cash"
-      ?"<div class='row'><span class='muted'>Cash Received</span><span style='font-weight:700'>Rs. "+Number(o.amountPaid).toLocaleString()+"</span></div>"
-       +"<div class='row'><span class='muted'>Change Due</span><span style='font-weight:700;color:#16a34a'>Rs. "+Number(o.change||0).toLocaleString()+"</span></div>"
+      ?"<div class='row'><span class='muted'>Cash Received</span><span>Rs."+Number(o.amountPaid).toLocaleString()+"</span></div>"
+       +"<div class='row'><span class='muted'>Change</span><span>Rs."+Number(o.change||0).toLocaleString()+"</span></div>"
       :"";
-    printWin(
-      receiptHeader(isTbl,badge)
-      +"<div style='font-size:11px;color:#aaa;margin-bottom:10px;text-align:center'>Order #"+o.orderNum+" · "+o.date+" "+o.time+"</div>"
-      +rows+"<div class='dash'></div>"
-      +"<div class='row'><span class='muted'>Payment</span><span style='font-weight:700'>"+(o.paymentMethod==="cash"?"Cash":"Card / NFC")+"</span></div>"
+    return (
+      "<div style='text-align:center;padding-bottom:8px;border-bottom:1px dashed #999;margin-bottom:8px'>"
+      +"<h1>CHEF ROOSTER</h1>"
+      +"<div class='sub'>"+ADDR1+"</div>"
+      +"<div class='sub'>Tel: "+TEL+"</div>"
+      +"<div style='font-size:10px;font-weight:700;margin-top:5px;border:1px solid #000;padding:2px 8px;display:inline-block'>"+badge+"</div>"
+      +"<div style='font-size:10px;color:#666;margin-top:4px'>Order #"+o.orderNum+" | "+o.date+" "+o.time+"</div></div>"
+      +rows
+      +"<div class='dash'></div>"
+      +(o.subtotal!==o.total?"<div class='row'><span class='muted'>Subtotal</span><span>Rs."+Number(o.subtotal||o.total).toLocaleString()+"</span></div>":"")
+      +discLine
+      +"<div class='row' style='font-size:14px;font-weight:900;border-top:1px solid #000;margin-top:4px;padding-top:6px'><span>TOTAL</span><span>Rs."+Number(o.total).toLocaleString()+"</span></div>"
+      +"<div class='dash'></div>"
+      +"<div class='row'><span class='muted'>Payment</span><span>"+(o.paymentMethod==="cash"?"Cash":"Card / NFC")+"</span></div>"
       +changeLine
-      +"<div style='display:flex;justify-content:space-between;padding:10px 0;border-top:2px solid #1a1a1a;margin-top:6px'>"
-      +"<span style='font-size:15px;font-weight:800'>TOTAL</span>"
-      +"<span style='font-size:18px;font-weight:800;color:#C8102E'>Rs. "+Number(o.total).toLocaleString()+"</span></div>"
-      +"<div style='text-align:center;margin-top:14px;padding-top:10px;border-top:2px dashed #ccc;font-size:10px;color:#ccc;line-height:2'>Thank you for visiting Chef Rooster</div>"
+      +"<div style='text-align:center;margin-top:10px;font-size:10px;color:#666;border-top:1px dashed #999;padding-top:8px'>Thank you for visiting!<br>Chef Rooster · Sri Lanka</div>"
     );
   };
+
+  const printOrder=o=>printWin(buildReceiptHTML(o));
+
+  // ── Auto-print when receipt screen loads ─────────────────
+  useEffect(()=>{
+    if(screen==="receipt"&&lastOrder){
+      const t=setTimeout(()=>printOrder(lastOrder),800);
+      return ()=>clearTimeout(t);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[screen,lastOrder]);
 
   const printDailyReport=()=>{
     const tod=new Date().toLocaleDateString("en-GB");
@@ -391,33 +429,30 @@ export default function App() {
     const iMap={};dayO.forEach(o=>o.items.forEach(i=>{iMap[i.name]=(iMap[i.name]||0)+i.qty;}));
     const top5=Object.entries(iMap).sort((a,b)=>b[1]-a[1]).slice(0,5);
     const topRows=top5.map(([nm,qty],i)=>"<div class='row'><span>"+(i+1)+". "+nm+"</span><span>"+qty+" sold</span></div>").join("");
-    const orderRows=dayO.slice().reverse().map(o=>"<div class='row'><span><b>#"+o.orderNum+"</b> "+o.ref+" "+o.time+"</span><span style='font-weight:700;color:#C8102E'>Rs."+o.total.toLocaleString()+"</span></div>").join("");
+    const orderRows=dayO.slice().reverse().map(o=>"<div class='row'><span><b>#"+o.orderNum+"</b> "+o.ref+" "+o.time+"</span><span>Rs."+o.total.toLocaleString()+"</span></div>").join("");
     printWin(
-      "<div style='text-align:center;padding-bottom:12px;border-bottom:2px dashed #ccc;margin-bottom:14px'>"
-      +"<div style='font-size:24px'>🐓</div><h1>CHEF ROOSTER</h1>"
-      +"<div class='sub'>"+ADDR1+"</div>"
-      +"<div class='sub'>Tel: "+TEL+"</div>"
-      +"<div style='font-size:12px;font-weight:700;color:#555;margin-top:6px;letter-spacing:1px'>DAILY SALES REPORT</div>"
-      +"<div style='font-size:11px;color:#999;margin-top:4px'>"+tod+"</div></div>"
-      +"<div style='background:#f9f9f9;border-radius:8px;padding:10px 12px;margin-bottom:10px'>"
-      +"<div class='row'><span class='muted'>Total Orders</span><span style='font-weight:700'>"+dayO.length+"</span></div>"
-      +"<div class='row'><span class='muted'>Dine-In ("+dineO.length+")</span><span style='font-weight:700'>Rs. "+dineO.reduce((s,o)=>s+o.total,0).toLocaleString()+"</span></div>"
-      +"<div class='row'><span class='muted'>Takeaway ("+taO.length+")</span><span style='font-weight:700'>Rs. "+taO.reduce((s,o)=>s+o.total,0).toLocaleString()+"</span></div></div>"
-      +"<div style='background:#f9f9f9;border-radius:8px;padding:10px 12px;margin-bottom:10px'>"
-      +"<div class='row'><span class='muted'>Cash ("+cashO.length+")</span><span style='font-weight:700'>Rs. "+cashRv.toLocaleString()+"</span></div>"
-      +"<div class='row'><span class='muted'>Card ("+cardO.length+")</span><span style='font-weight:700'>Rs. "+cardRv.toLocaleString()+"</span></div></div>"
-      +"<div style='display:flex;justify-content:space-between;padding:10px 0;border-top:2px solid #1a1a1a;border-bottom:2px solid #1a1a1a;margin-bottom:12px'>"
-      +"<span style='font-size:15px;font-weight:800'>GROSS SALES</span>"
-      +"<span style='font-size:18px;font-weight:800;color:#C8102E'>Rs. "+gross.toLocaleString()+"</span></div>"
-      +(top5.length?"<div style='font-weight:700;font-size:11px;color:#aaa;text-transform:uppercase;margin-bottom:6px'>Top Items</div>"+topRows+"<div class='dash'></div>":"")
-      +"<div style='font-weight:700;font-size:11px;color:#aaa;text-transform:uppercase;margin-bottom:6px'>All Orders</div>"
-      +(orderRows||"<div style='color:#ccc;text-align:center;padding:10px'>No orders today</div>")
-      +"<div style='text-align:center;margin-top:14px;padding-top:10px;border-top:2px dashed #ccc;font-size:10px;color:#ccc;line-height:2'>"
-      +"Printed: "+new Date().toLocaleString("en-GB")+"<br>Chef Rooster · Sri Lanka</div>"
+      "<div style='text-align:center;padding-bottom:8px;border-bottom:1px dashed #999;margin-bottom:10px'>"
+      +"<h1>CHEF ROOSTER</h1><div class='sub'>"+ADDR1+"</div><div class='sub'>Tel: "+TEL+"</div>"
+      +"<div style='font-size:11px;font-weight:700;margin-top:5px'>DAILY SALES REPORT</div>"
+      +"<div style='font-size:10px;color:#666'>"+tod+"</div></div>"
+      +"<div class='row'><span>Total Orders</span><span>"+dayO.length+"</span></div>"
+      +"<div class='row'><span>Dine-In ("+dineO.length+")</span><span>Rs."+dineO.reduce((s,o)=>s+o.total,0).toLocaleString()+"</span></div>"
+      +"<div class='row'><span>Takeaway ("+taO.length+")</span><span>Rs."+taO.reduce((s,o)=>s+o.total,0).toLocaleString()+"</span></div>"
+      +"<div class='dash'></div>"
+      +"<div class='row'><span>Cash ("+cashO.length+")</span><span>Rs."+cashRv.toLocaleString()+"</span></div>"
+      +"<div class='row'><span>Card ("+cardO.length+")</span><span>Rs."+cardRv.toLocaleString()+"</span></div>"
+      +"<div class='dash'></div>"
+      +"<div class='row' style='font-size:14px;font-weight:900'><span>GROSS SALES</span><span>Rs."+gross.toLocaleString()+"</span></div>"
+      +"<div class='dash'></div>"
+      +(top5.length?"<div style='font-weight:700;font-size:10px;margin-bottom:4px'>TOP ITEMS</div>"+topRows+"<div class='dash'></div>":"")
+      +"<div style='font-weight:700;font-size:10px;margin-bottom:4px'>ALL ORDERS</div>"
+      +(orderRows||"<div style='color:#aaa;text-align:center'>No orders today</div>")
+      +"<div style='text-align:center;margin-top:10px;font-size:10px;color:#666;border-top:1px dashed #999;padding-top:8px'>"
+      +"Printed: "+new Date().toLocaleString("en-GB")+"<br>Chef Rooster</div>"
     );
   };
 
-  // ── Sync ────────────────────────────────────────────────
+  // ── Sync ─────────────────────────────────────────────────
   const sync=async()=>{
     if(!sheetUrl){setSyncMsg("⚠️ No endpoint — add it in Settings");return;}
     const q=orders.filter(o=>!o.synced);
@@ -431,12 +466,12 @@ export default function App() {
       if(j.success){
         const up=orders.map(o=>({...o,synced:true}));
         setOrders(up);localStorage.setItem("cr_orders",JSON.stringify(up));
-        setSyncMsg("✅ "+q.length+" order"+(q.length>1?"s":"")+" synced to Google Sheets");
-      } else setSyncMsg("❌ Sync failed: "+(j.error||"Unknown error. Check your Apps Script URL."));
-    }catch(e){setSyncMsg("❌ Network error: "+e.message+". Check your Apps Script URL.");}
+        setSyncMsg("✅ "+q.length+" order"+(q.length>1?"s":"")+" synced");
+      } else setSyncMsg("❌ Sync failed: "+(j.error||"Check your Apps Script URL"));
+    }catch(e){setSyncMsg("❌ Network error: "+e.message);}
   };
 
-  // ── Derived ─────────────────────────────────────────────
+  // ── Derived ───────────────────────────────────────────────
   const today    = new Date().toLocaleDateString("en-GB");
   const todayO   = orders.filter(o=>o.date===today);
   const todayRev = todayO.reduce((s,o)=>s+o.total,0);
@@ -450,7 +485,6 @@ export default function App() {
     else setLErr("Incorrect username or password. Please try again.");
   };
 
-  // ── Clear modal ─────────────────────────────────────────
   const ClearModal=()=>!clrModal?null:(
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999}}>
       <div style={{background:"#fff",borderRadius:22,padding:"34px 28px",maxWidth:320,width:"100%",margin:16,textAlign:"center",boxShadow:"0 24px 60px rgba(0,0,0,0.3)"}}>
@@ -476,7 +510,9 @@ export default function App() {
     <div style={{minHeight:"100vh",background:"linear-gradient(145deg,#9B0020,#C8102E,#e63950)",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Segoe UI',system-ui,sans-serif",padding:20}}>
       <div style={{background:"#fff",borderRadius:24,padding:"40px 36px",width:"100%",maxWidth:380,boxShadow:"0 24px 60px rgba(0,0,0,0.25)"}}>
         <div style={{textAlign:"center",marginBottom:28}}>
-          <div style={{width:72,height:72,borderRadius:20,background:"linear-gradient(135deg,#C8102E,#9B0020)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:38,margin:"0 auto 14px"}}>🐓</div>
+          <div style={{width:90,height:90,margin:"0 auto 14px",display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <Logo size={90} round={true}/>
+          </div>
           <div style={{fontSize:22,fontWeight:800,letterSpacing:2,color:RED}}>CHEF ROOSTER</div>
           <div style={{fontSize:11,color:"#aaa",marginTop:3,letterSpacing:1}}>POINT OF SALE SYSTEM</div>
           <div style={{fontSize:11,color:"#bbb",marginTop:4}}>{ADDR1}</div>
@@ -511,7 +547,7 @@ export default function App() {
   // PAYMENT
   // ══════════════════════════════════════════════════════
   if(screen==="payment"){
-    const paid=parseFloat(cashAmt)||0,change=paid-total;
+    const paid=parseFloat(cashAmt)||0, change=paid-total;
     const ref=mode==="table"?"Table "+selTbl:(takeaways.find(t=>t.id===selTA)?.taNum||"TA");
     const cardFlow=()=>{
       setPayStep("card-proc");
@@ -522,12 +558,65 @@ export default function App() {
         <TopBar onBack={()=>setScreen("pos")} right={<span style={{color:"rgba(255,255,255,0.85)",fontSize:13}}>{ref} · Due: <b style={{color:"#fff"}}>{Rs(total)}</b></span>}>
           <span style={{color:"#fff",fontWeight:700,fontSize:16}}>🐓 Payment</span>
         </TopBar>
-        <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"20px 16px",gap:18,overflowY:"auto"}}>
+        <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"16px",gap:14,overflowY:"auto"}}>
+
+          {/* Discount Panel */}
+          <div style={{width:"100%",maxWidth:440}}>
+            <button onClick={()=>setShowDisc(p=>!p)}
+              style={{width:"100%",padding:"11px 16px",background:showDisc?"#fff3f5":"#f9f9f9",border:"1.5px solid "+(showDisc?RED:"#e5e5e5"),borderRadius:12,cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",fontWeight:700,fontSize:13,color:showDisc?RED:"#555"}}>
+              <span>🏷️ Apply Discount</span>
+              <span style={{fontSize:11,fontWeight:400,color:showDisc?RED:"#aaa"}}>{showDisc?"▲ hide":"▼ expand"}</span>
+            </button>
+            {showDisc&&(
+              <div style={{background:"#fff",border:"1.5px solid "+RED,borderTop:"none",borderRadius:"0 0 12px 12px",padding:"14px 16px"}}>
+                <div style={{display:"flex",gap:8,marginBottom:12}}>
+                  {[["percent","%"],["fixed","Rs"]].map(([t,lb])=>(
+                    <button key={t} onClick={()=>{setDiscType(t);setDiscValue("");}}
+                      style={{flex:1,padding:"8px 0",border:"1.5px solid "+(discType===t?RED:"#ddd"),borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:13,background:discType===t?RED:"#fff",color:discType===t?"#fff":"#555"}}>
+                      {lb} {t==="percent"?"Percentage":"Fixed Amount"}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="number"
+                  value={discValue}
+                  onChange={e=>setDiscValue(e.target.value)}
+                  placeholder={discType==="percent"?"Enter % (e.g. 10)":"Enter amount (e.g. 500)"}
+                  style={{width:"100%",padding:"11px 14px",borderRadius:10,border:"1.5px solid #ddd",fontSize:15,boxSizing:"border-box",outline:"none",textAlign:"center",fontWeight:700}}
+                />
+                {discountAmount>0&&(
+                  <div style={{display:"flex",justifyContent:"space-between",marginTop:10,padding:"8px 12px",background:"#f0fdf4",borderRadius:8,fontSize:13}}>
+                    <span style={{color:"#166534"}}>Discount Applied</span>
+                    <span style={{fontWeight:800,color:"#16a34a"}}>- {Rs(discountAmount)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Order total summary */}
+          {discountAmount>0&&(
+            <div style={{width:"100%",maxWidth:440,background:"#fff",borderRadius:12,padding:"12px 16px",border:"1px solid #e5e5e5"}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:6}}>
+                <span style={{color:"#888"}}>Subtotal</span>
+                <span style={{fontWeight:600}}>{Rs(subtotal)}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:6}}>
+                <span style={{color:"#16a34a"}}>Discount {discType==="percent"?"("+discValue+"%)":""}</span>
+                <span style={{fontWeight:700,color:"#16a34a"}}>- {Rs(discountAmount)}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:800,borderTop:"1.5px solid #eee",paddingTop:8}}>
+                <span>Total to Pay</span>
+                <span style={{color:RED}}>{Rs(total)}</span>
+              </div>
+            </div>
+          )}
+
           {payStep==="choose"&&<>
             <p style={{margin:0,fontWeight:700,fontSize:15,color:"#333"}}>Select payment method</p>
             <div style={{display:"flex",gap:14,width:"100%",maxWidth:440}}>
               {[["💵","Cash","cash"],["💳","Card / NFC","card-tap"]].map(([ic,lb,st])=>(
-                <button key={st} onClick={()=>setPayStep(st)} style={{flex:1,padding:"28px 12px",background:"#fff",border:"1.5px solid #e5e5e5",borderRadius:18,cursor:"pointer",textAlign:"center",boxShadow:"0 2px 10px rgba(0,0,0,0.06)"}}>
+                <button key={st} onClick={()=>setPayStep(st)} style={{flex:1,padding:"24px 12px",background:"#fff",border:"1.5px solid #e5e5e5",borderRadius:18,cursor:"pointer",textAlign:"center",boxShadow:"0 2px 10px rgba(0,0,0,0.06)"}}>
                   <div style={{fontSize:36,marginBottom:10}}>{ic}</div>
                   <div style={{fontSize:15,fontWeight:700,color:"#1a1a1a"}}>{lb}</div>
                 </button>
@@ -539,10 +628,12 @@ export default function App() {
               <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>💵 Cash Payment — {ref}</p>
               <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Amount due: <b style={{color:RED}}>{Rs(total)}</b></p>
               <Numpad value={cashAmt} onChange={setCashAmt}/>
-              {paid>=total&&paid>0&&<div style={{background:"#f0fdf4",borderRadius:10,padding:"12px 16px",marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{fontSize:13,color:"#166534"}}>Change Due</span>
-                <span style={{fontSize:22,fontWeight:800,color:"#16a34a"}}>{Rs(change)}</span>
-              </div>}
+              {paid>=total&&paid>0&&(
+                <div style={{background:"#f0fdf4",borderRadius:10,padding:"12px 16px",marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontSize:13,color:"#166534"}}>Change Due</span>
+                  <span style={{fontSize:22,fontWeight:800,color:"#16a34a"}}>{Rs(change)}</span>
+                </div>
+              )}
               <button onClick={()=>paid>=total&&finalize("cash",paid)} disabled={paid<total} style={{...P.btn,width:"100%",marginTop:14,padding:14,opacity:paid<total?0.4:1}}>Complete Payment</button>
               <button onClick={()=>setPayStep("choose")} style={P.ghost}>← Change method</button>
             </div>
@@ -579,22 +670,24 @@ export default function App() {
   // RECEIPT
   // ══════════════════════════════════════════════════════
   if(screen==="receipt"&&lastOrder){
-    const isTbl=lastOrder.type==="Dine In",ac=isTbl?RED:AMB;
+    const isTbl=lastOrder.type==="Dine In", ac=isTbl?RED:AMB;
     const badge=isTbl?"TABLE "+lastOrder.tableId+" — DINE IN":"TAKEAWAY — "+lastOrder.ref;
     return (
       <div style={P.page}>
         <style>{`@media print{.np{display:none!important}.pa{box-shadow:none!important}}`}</style>
         <div className="np" style={{...P.topbar,background:"linear-gradient(135deg,"+ac+","+(isTbl?DRED:"#b45309")+")",justifyContent:"space-between"}}>
-          <span style={{color:"#fff",fontWeight:700,fontSize:13}}>🐓 Receipt — Order #{lastOrder.orderNum} · {lastOrder.ref}</span>
+          <span style={{color:"#fff",fontWeight:700,fontSize:13}}>Receipt — Order #{lastOrder.orderNum} · {lastOrder.ref}</span>
           <div style={{display:"flex",gap:8}}>
-            <button onClick={()=>window.print()} style={{...P.tbBtn,background:"#fff",color:ac}}>🖨️ Print</button>
+            <button onClick={()=>printOrder(lastOrder)} style={{...P.tbBtn,background:"#fff",color:ac}}>🖨️ Reprint</button>
             <button onClick={()=>{setPayStep("choose");setCashAmt("");setMode(null);setScreen("home");}} style={P.tbBtn}>⬅ Home</button>
           </div>
         </div>
         <div style={{flex:1,overflowY:"auto",background:"#f4f4f4",display:"flex",justifyContent:"center",padding:20,alignItems:"flex-start"}}>
           <div className="pa" style={{...P.card,maxWidth:420,width:"100%",padding:28}}>
             <div style={{textAlign:"center",borderBottom:"2px dashed #e0e0e0",paddingBottom:18,marginBottom:18}}>
-              <div style={{fontSize:32,marginBottom:4}}>🐓</div>
+              <div style={{width:72,height:72,margin:"0 auto 10px",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                <Logo size={72} round={true}/>
+              </div>
               <div style={{fontSize:20,fontWeight:800,letterSpacing:2,color:RED}}>CHEF ROOSTER</div>
               <div style={{fontSize:11,color:"#aaa",marginTop:4}}>{ADDR1}</div>
               <div style={{fontSize:11,color:"#aaa"}}>Tel: {TEL}</div>
@@ -604,12 +697,22 @@ export default function App() {
             {lastOrder.items.map((it,i)=>(
               <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid #f5f5f5",fontSize:13}}>
                 <span style={{color:"#333"}}>{it.name} <span style={{color:"#bbb"}}>x{it.qty}</span></span>
-                <span style={{fontWeight:700}}>{Rs(it.price*it.qty)}</span>
+                <span style={{fontWeight:700}}>{Rs((it.price||0)*it.qty)}</span>
               </div>
             ))}
             <div style={{borderTop:"2px dashed #e0e0e0",marginTop:16,paddingTop:16}}>
+              {lastOrder.discountAmount>0&&<>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:6,fontSize:13}}>
+                  <span style={{color:"#888"}}>Subtotal</span>
+                  <span style={{fontWeight:600}}>{Rs(lastOrder.subtotal)}</span>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:6,fontSize:13}}>
+                  <span style={{color:"#16a34a"}}>Discount{lastOrder.discountType==="percent"?" ("+lastOrder.discountValue+"%)":""}</span>
+                  <span style={{fontWeight:700,color:"#16a34a"}}>- {Rs(lastOrder.discountAmount)}</span>
+                </div>
+              </>}
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:8,fontSize:13}}>
-                <span style={{color:"#888"}}>Payment Method</span>
+                <span style={{color:"#888"}}>Payment</span>
                 <span style={{fontWeight:600}}>{lastOrder.paymentMethod==="cash"?"Cash":"Card / NFC"}</span>
               </div>
               {lastOrder.paymentMethod==="cash"&&<>
@@ -644,7 +747,7 @@ export default function App() {
       <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
         <div style={{...P.card,maxWidth:340,width:"100%",padding:36,textAlign:"center"}}>
           <div style={{width:68,height:68,borderRadius:"50%",background:"#fff3f5",display:"flex",alignItems:"center",justifyContent:"center",fontSize:32,margin:"0 auto 18px"}}>🔒</div>
-          <div style={{fontWeight:800,fontSize:18,color:"#1a1a1a",marginBottom:6}}>Reports Access</div>
+          <div style={{fontWeight:800,fontSize:18,marginBottom:6}}>Reports Access</div>
           <div style={{fontSize:13,color:"#aaa",marginBottom:22}}>Enter your admin password to view reports</div>
           <input type="password" value={rptPin} onChange={e=>{setRptPin(e.target.value);setRptPinErr("");}} onKeyDown={e=>e.key==="Enter"&&doRptUnlock()} placeholder="Enter password" autoFocus
             style={{width:"100%",padding:"13px 14px",borderRadius:10,border:"1.5px solid "+(rptPinErr?"#fca5a5":"#e5e5e5"),fontSize:16,boxSizing:"border-box",outline:"none",textAlign:"center",letterSpacing:6,marginBottom:10}}/>
@@ -694,16 +797,17 @@ export default function App() {
               <div className="no-p" style={{background:"linear-gradient(135deg,#C8102E,#9B0020)",padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <span style={{color:"#fff",fontWeight:700,fontSize:14}}>📋 Day End Report</span>
                 <div style={{display:"flex",gap:8}}>
-                  <button onClick={()=>window.print()} style={{...P.tbBtn,background:"#fff",color:RED,fontSize:12}}>🖨️ Print</button>
+                  <button onClick={()=>printDailyReport()} style={{...P.tbBtn,background:"#fff",color:RED,fontSize:12}}>🖨️ Print</button>
                   <button onClick={()=>setShowDE(false)} style={{...P.tbBtn,fontSize:12}}>✕ Close</button>
                 </div>
               </div>
               <div style={{padding:"24px 28px",maxHeight:"75vh",overflowY:"auto"}}>
                 <div style={{textAlign:"center",borderBottom:"2px dashed #e0e0e0",paddingBottom:18,marginBottom:18}}>
-                  <div style={{fontSize:28,marginBottom:4}}>🐓</div>
+                  <div style={{width:56,height:56,margin:"0 auto 10px",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    <Logo size={56} round={true}/>
+                  </div>
                   <div style={{fontSize:17,fontWeight:800,letterSpacing:2,color:RED}}>CHEF ROOSTER</div>
-                  <div style={{fontSize:11,color:"#aaa",marginTop:3}}>{ADDR1}</div>
-                  <div style={{fontSize:11,color:"#aaa"}}>Tel: {TEL}</div>
+                  <div style={{fontSize:11,color:"#aaa",marginTop:3}}>{ADDR1} · {TEL}</div>
                   <div style={{fontSize:13,fontWeight:700,color:"#555",marginTop:6,letterSpacing:1}}>DAY END REPORT</div>
                   <div style={{fontSize:12,color:"#aaa",marginTop:4}}>{dayEnd.date}</div>
                 </div>
@@ -714,24 +818,22 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-                <div style={{fontWeight:800,fontSize:11,color:"#aaa",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>Sales Summary</div>
                 {[["Dine-In Orders ("+dayEnd.dineInCount+")",Rs(dayEnd.dineInRev),RED],["Takeaway Orders ("+dayEnd.takeawayCount+")",Rs(dayEnd.takeawayRev),"#d97706"],["Total Orders ("+dayEnd.totalOrders+")",Rs(dayEnd.grossSales),"#1a1a1a"]].map(([l,v,col])=>(
                   <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid #f5f5f5",fontSize:13}}>
                     <span style={{color:"#555"}}>{l}</span><span style={{fontWeight:700,color:col}}>{v}</span>
                   </div>
                 ))}
-                <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",marginBottom:16,borderBottom:"2px solid #1a1a1a",marginTop:4}}>
+                <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",marginBottom:16,borderBottom:"2px solid #1a1a1a"}}>
                   <span style={{fontWeight:800,fontSize:15}}>GROSS SALES</span>
                   <span style={{fontWeight:800,fontSize:18,color:RED}}>{Rs(dayEnd.grossSales)}</span>
                 </div>
-                <div style={{fontWeight:800,fontSize:11,color:"#aaa",letterSpacing:1,textTransform:"uppercase",marginBottom:8}}>Payment Breakdown</div>
                 {[["💵 Cash ("+dayEnd.cashCount+")",Rs(dayEnd.cashRev)],["💳 Card ("+dayEnd.cardCount+")",Rs(dayEnd.cardRev)]].map(([l,v])=>(
                   <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid #f5f5f5",fontSize:13}}>
                     <span style={{color:"#555"}}>{l}</span><span style={{fontWeight:700}}>{v}</span>
                   </div>
                 ))}
                 {dayEnd.topItems.length>0&&<>
-                  <div style={{fontWeight:800,fontSize:11,color:"#aaa",letterSpacing:1,textTransform:"uppercase",margin:"16px 0 8px"}}>Top Items</div>
+                  <div style={{fontWeight:800,fontSize:11,color:"#aaa",textTransform:"uppercase",margin:"16px 0 8px"}}>Top Items</div>
                   {dayEnd.topItems.map(([nm,qty],i)=>(
                     <div key={nm} style={{display:"flex",alignItems:"center",padding:"5px 0",borderBottom:"1px solid #f5f5f5",fontSize:13}}>
                       <div style={{width:22,height:22,borderRadius:"50%",background:i===0?"#f59e0b":RED,color:"#fff",fontSize:9,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",marginRight:10,flexShrink:0}}>{i+1}</div>
@@ -741,8 +843,8 @@ export default function App() {
                 </>}
                 <div style={{background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:12,padding:"14px 18px",marginTop:18,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <div>
-                    <div style={{fontSize:11,color:"#166534",textTransform:"uppercase",letterSpacing:0.5,fontWeight:700}}>Closing Cash Balance</div>
-                    <div style={{fontSize:10,color:"#aaa",marginTop:2}}>Opening Rs. 0 + Cash Sales</div>
+                    <div style={{fontSize:11,color:"#166534",textTransform:"uppercase",fontWeight:700}}>Closing Cash Balance</div>
+                    <div style={{fontSize:10,color:"#aaa",marginTop:2}}>Opening Rs.0 + Cash Sales</div>
                   </div>
                   <div style={{fontSize:22,fontWeight:800,color:"#16a34a"}}>{Rs(dayEnd.closingCashBalance)}</div>
                 </div>
@@ -759,7 +861,7 @@ export default function App() {
         <div style={{display:"flex",background:"#fff",borderBottom:"2px solid #eee",flexShrink:0}}>
           {[["📊","Summary","summary"],["💰","Till","till"]].map(([ic,lb,tab])=>(
             <button key={tab} onClick={()=>setRptTab(tab)}
-              style={{flex:1,padding:"12px 0",border:"none",background:"transparent",cursor:"pointer",fontSize:13,fontWeight:700,color:rptTab===tab?RED:"#aaa",borderBottom:"3px solid "+(rptTab===tab?RED:"transparent"),transition:"all .15s"}}>
+              style={{flex:1,padding:"12px 0",border:"none",background:"transparent",cursor:"pointer",fontSize:13,fontWeight:700,color:rptTab===tab?RED:"#aaa",borderBottom:"3px solid "+(rptTab===tab?RED:"transparent")}}>
               {ic} {lb}
             </button>
           ))}
@@ -769,7 +871,7 @@ export default function App() {
         {rptTab==="summary"&&(
           <div style={{flex:1,overflowY:"auto",padding:14}}>
             <div style={{display:"flex",justifyContent:"flex-end",marginBottom:12}}>
-              <button onClick={printDailyReport} style={{background:"linear-gradient(135deg,#C8102E,#9B0020)",border:"none",borderRadius:10,color:"#fff",cursor:"pointer",fontWeight:700,fontSize:13,padding:"9px 18px",display:"flex",alignItems:"center",gap:7}}>
+              <button onClick={printDailyReport} style={{background:"linear-gradient(135deg,#C8102E,#9B0020)",border:"none",borderRadius:10,color:"#fff",cursor:"pointer",fontWeight:700,fontSize:13,padding:"9px 18px"}}>
                 🖨️ Print Daily Report
               </button>
             </div>
@@ -807,7 +909,7 @@ export default function App() {
                   </div>
                   <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
                     <div style={{fontSize:13,fontWeight:700,color:o.type==="Dine In"?RED:AMB}}>{Rs(o.total)}</div>
-                    <button onClick={()=>printOrder(o)} title="Print" style={{width:28,height:28,borderRadius:8,border:"1px solid #eee",background:"#f9f9f9",cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>🖨️</button>
+                    <button onClick={()=>printOrder(o)} title="Print" style={{width:28,height:28,borderRadius:8,border:"1px solid #eee",background:"#f9f9f9",cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center"}}>🖨️</button>
                   </div>
                 </div>
               ))}
@@ -843,7 +945,7 @@ export default function App() {
                 <div>
                   <div style={{background:"#f1f5f9",borderRadius:10,padding:"12px 16px",textAlign:"center",marginBottom:10}}>
                     <div style={{fontSize:13,color:"#64748b",fontWeight:600}}>Till closed at {tillSess?.closedAt}</div>
-                    <div style={{fontSize:11,color:"#aaa",marginTop:3}}>A new till opens automatically tomorrow</div>
+                    <div style={{fontSize:11,color:"#aaa",marginTop:3}}>New till opens automatically tomorrow</div>
                   </div>
                   {dayEnd&&<button onClick={()=>setShowDE(true)} style={{...P.btn,width:"100%",padding:13,background:"#475569"}}>📋 View Last Day End Report</button>}
                 </div>
@@ -874,16 +976,14 @@ export default function App() {
   // SETTINGS
   // ══════════════════════════════════════════════════════
   if(screen==="settings"){
-    const catItems = BASE_MENU[priceCat]||[];
+    const catItems=BASE_MENU[priceCat]||[];
     return (
       <div style={P.page}>
         <TopBar onBack={()=>setScreen("home")}><span style={{color:"#fff",fontWeight:700,fontSize:16}}>🐓 Settings</span></TopBar>
         <div style={{flex:1,overflowY:"auto",padding:14}}>
-
-          {/* Price Management */}
           <div style={{...P.card,marginBottom:12}}>
             <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>💲 Admin Price Management</p>
-            <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Edit item prices. Changes take effect immediately for new orders.</p>
+            <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Edit prices. Changes apply to all new orders immediately.</p>
             <div style={{overflowX:"auto",display:"flex",gap:6,marginBottom:14,paddingBottom:4}}>
               {Object.keys(BASE_MENU).map(c=>(
                 <button key={c} onClick={()=>setPriceCat(c)}
@@ -893,14 +993,12 @@ export default function App() {
               ))}
             </div>
             {catItems.map(item=>{
-              const cur = priceEdits[item.id]!==undefined ? priceEdits[item.id] : (customPrices[item.id]!==undefined?customPrices[item.id]:item.price);
+              const cur=priceEdits[item.id]!==undefined?priceEdits[item.id]:(customPrices[item.id]!==undefined?customPrices[item.id]:item.price);
               return (
                 <div key={item.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f5f5f5"}}>
-                  <div style={{flex:1,fontSize:13,fontWeight:600,color:"#1a1a1a"}}>{item.name}</div>
+                  <div style={{flex:1,fontSize:13,fontWeight:600}}>{item.name}</div>
                   <div style={{fontSize:10,color:"#bbb",minWidth:60,textAlign:"right"}}>Default: Rs.{item.price}</div>
-                  <input
-                    type="number"
-                    value={cur}
+                  <input type="number" value={cur}
                     onChange={e=>{const v=parseInt(e.target.value)||0;setPriceEdits(p=>({...p,[item.id]:v}));}}
                     style={{width:90,padding:"6px 8px",borderRadius:8,border:"1.5px solid "+(cur!==item.price?"#C8102E":"#ddd"),fontSize:13,fontWeight:700,outline:"none",textAlign:"right",color:cur!==item.price?RED:"#1a1a1a"}}
                   />
@@ -908,14 +1006,10 @@ export default function App() {
               );
             })}
             <div style={{display:"flex",gap:8,marginTop:14}}>
-              <button onClick={savePrices} style={{...P.btn,flex:1,padding:12,fontSize:13,background:priceSaved?"#16a34a":RED}}>
-                {priceSaved?"✅ Saved!":"💾 Save Prices"}
-              </button>
+              <button onClick={savePrices} style={{...P.btn,flex:1,padding:12,fontSize:13,background:priceSaved?"#16a34a":RED}}>{priceSaved?"✅ Saved!":"💾 Save Prices"}</button>
               <button onClick={()=>{if(window.confirm("Reset ALL prices to default?"))resetPrices();}} style={{...P.btn,padding:12,fontSize:13,background:"#64748b"}}>Reset All</button>
             </div>
           </div>
-
-          {/* Google Sheets */}
           <div style={{...P.card,marginBottom:12}}>
             <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>☁️ Google Sheets Sync</p>
             <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Paste your Apps Script Web App URL below</p>
@@ -923,8 +1017,6 @@ export default function App() {
               style={{width:"100%",padding:"10px 14px",borderRadius:8,border:"1.5px solid #ddd",fontSize:13,boxSizing:"border-box",marginBottom:10,outline:"none"}}/>
             <button onClick={()=>{localStorage.setItem("cr_url",sheetUrl);setSyncMsg("✅ URL saved");setScreen("reports");}} style={{...P.btn,width:"100%",padding:13}}>Save & Go to Reports →</button>
           </div>
-
-          {/* Apps Script guide */}
           <div style={{...P.card,marginBottom:12}}>
             <p style={{margin:"0 0 10px",fontWeight:700,fontSize:14}}>📋 Apps Script Setup</p>
             <div style={{fontSize:12,color:"#555",lineHeight:2,marginBottom:12}}>
@@ -932,25 +1024,29 @@ export default function App() {
               <b>Step 2:</b> Delete existing code, paste the script below<br/>
               <b>Step 3:</b> <b>Deploy → New Deployment → Web App</b><br/>
               <b>Step 4:</b> Execute as: <i>Me</i> · Access: <i>Anyone</i><br/>
-              <b>Step 5:</b> Copy the Web App URL and paste above<br/>
-              <b>Step 6:</b> If asked, click <b>Authorize access</b> and allow
+              <b>Step 5:</b> Copy Web App URL and paste above<br/>
+              <b>Step 6:</b> Click <b>Authorize access</b> and allow
             </div>
             <div style={{background:"#0d1117",borderRadius:10,padding:14,fontSize:10.5,fontFamily:"'Courier New',monospace",color:"#7ee787",lineHeight:1.9,overflowX:"auto",whiteSpace:"pre"}}>{SCRIPT_CODE}</div>
           </div>
-
-          {/* Session */}
+          <div style={{...P.card,marginBottom:12}}>
+            <p style={{margin:"0 0 10px",fontWeight:700,fontSize:14}}>🖨️ Receipt Printer Setup</p>
+            <div style={{fontSize:12,color:"#555",lineHeight:2}}>
+              <b>Step 1:</b> Connect your thermal receipt printer to the tablet<br/>
+              <b>Step 2:</b> When the print dialog opens after payment, select your printer<br/>
+              <b>Step 3:</b> Tick <b>"Remember this choice"</b> or set it as default<br/>
+              <b>Step 4:</b> From then on, receipts print automatically without any dialog
+            </div>
+          </div>
           <div style={{...P.card,marginBottom:12}}>
             <p style={{margin:"0 0 10px",fontWeight:700,fontSize:14}}>🔒 Session</p>
             <button onClick={()=>{setLoggedIn(false);setLUser("");setLPass("");setScreen("home");setHomeTab("tables");}} style={{...P.btn,background:"#475569",width:"100%",padding:13}}>Sign Out</button>
           </div>
-
-          {/* Reset */}
           <div style={{...P.card,marginBottom:12}}>
             <p style={{margin:"0 0 10px",fontWeight:700,fontSize:14}}>🔄 Reset</p>
             <button onClick={()=>{if(window.confirm("Reset all tables?")){const f=mkTables();setTables(f);localStorage.setItem("cr_tables",JSON.stringify(f));}}} style={{...P.btn,background:AMB,width:"100%",padding:12,marginBottom:8}}>🪑 Reset All Tables</button>
             <button onClick={()=>{if(window.confirm("Clear all takeaway orders?")){setTakeaways([]);localStorage.setItem("cr_takeaways","[]");}}} style={{...P.btn,background:"#059669",width:"100%",padding:12}}>🛍️ Clear Active Takeaways</button>
           </div>
-
           <div style={P.card}>
             <p style={{margin:"0 0 10px",fontWeight:700,fontSize:14,color:"#dc2626"}}>⚠️ Danger Zone</p>
             <button onClick={()=>{if(window.confirm("Delete ALL order history?")){setOrders([]);setCounter(1);localStorage.setItem("cr_orders","[]");localStorage.setItem("cr_counter","1");}}} style={{...P.btn,background:"#dc2626",width:"100%",padding:13}}>🗑️ Clear All Order History</button>
@@ -964,7 +1060,7 @@ export default function App() {
   // POS
   // ══════════════════════════════════════════════════════
   if(screen==="pos"){
-    const isTbl=mode==="table",ac=isTbl?RED:AMB;
+    const isTbl=mode==="table", ac=isTbl?RED:AMB;
     const gradBg=isTbl?"linear-gradient(135deg,#C8102E,#9B0020)":"linear-gradient(135deg,#D97706,#b45309)";
     const ref=isTbl?"Table "+selTbl:(takeaways.find(t=>t.id===selTA)?.taNum||"TA");
     const openedAt=isTbl?tables.find(t=>t.id===selTbl)?.openedAt:takeaways.find(t=>t.id===selTA)?.createdAt;
@@ -975,7 +1071,9 @@ export default function App() {
           <div style={{...P.topbar,background:gradBg}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
               <button onClick={()=>setScreen("home")} style={{...P.tbBtn,padding:"6px 10px",fontSize:16}}>←</button>
-              <div style={{width:36,height:36,borderRadius:10,background:"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🐓</div>
+              <div style={{width:36,height:36,borderRadius:8,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(255,255,255,0.15)",flexShrink:0}}>
+                <Logo size={36} round={true}/>
+              </div>
               <div>
                 <div style={{color:"#fff",fontWeight:800,fontSize:15,letterSpacing:1}}>CHEF ROOSTER</div>
                 <div style={{color:"rgba(255,255,255,0.65)",fontSize:10}}>{isTbl?"TABLE "+selTbl+" — DINE IN":"TAKEAWAY — "+ref}</div>
@@ -989,12 +1087,12 @@ export default function App() {
           <div style={{background:"#fff",borderBottom:"1px solid #eee",overflowX:"auto",display:"flex",flexShrink:0,scrollbarWidth:"none"}}>
             {Object.keys(BASE_MENU).map(c=>(
               <button key={c} onClick={()=>setCat(c)}
-                style={{padding:"10px 12px",border:"none",background:"transparent",cursor:"pointer",whiteSpace:"nowrap",fontSize:11,fontWeight:700,color:cat===c?ac:"#888",borderBottom:"3px solid "+(cat===c?ac:"transparent"),transition:"color .12s"}}>
+                style={{padding:"10px 12px",border:"none",background:"transparent",cursor:"pointer",whiteSpace:"nowrap",fontSize:11,fontWeight:700,color:cat===c?ac:"#888",borderBottom:"3px solid "+(cat===c?ac:"transparent")}}>
                 {CICONS[c]} {c}
               </button>
             ))}
           </div>
-          <div style={{flex:1,overflowY:"auto",padding:10,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:8,alignContent:"start"}}>
+          <div style={{flex:1,overflowY:"auto",padding:10,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(128px,1fr))",gap:8,alignContent:"start"}}>
             {BASE_MENU[cat].map(item=>{
               const inCart=cart.find(i=>i.id===item.id);
               const dp=getPrice(item);
@@ -1010,7 +1108,7 @@ export default function App() {
             })}
           </div>
         </div>
-        <div style={{width:270,background:"#fff",borderLeft:"1px solid #ececec",display:"flex",flexDirection:"column",flexShrink:0}}>
+        <div style={{width:265,background:"#fff",borderLeft:"1px solid #ececec",display:"flex",flexDirection:"column",flexShrink:0}}>
           <div style={{padding:"12px 14px 10px",borderBottom:"1px solid #f2f2f2",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <div>
               <div style={{fontWeight:700,fontSize:14,color:"#1a1a1a"}}>{isTbl?"Table "+selTbl:ref} Order</div>
@@ -1033,23 +1131,23 @@ export default function App() {
               <div key={item.id} style={{display:"flex",alignItems:"center",gap:5,marginBottom:7,padding:"9px 8px",background:"#f9f9f9",borderRadius:11}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:11,fontWeight:700,color:"#1a1a1a",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</div>
-                  <div style={{fontSize:10,color:"#bbb"}}>Rs. {item.price.toLocaleString()} each</div>
+                  <div style={{fontSize:10,color:"#bbb"}}>Rs. {item.price.toLocaleString()}</div>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
                   <button onClick={()=>adj(item.id,-1)} style={{width:24,height:24,borderRadius:"50%",border:"1.5px solid "+ac,background:"#fff",color:ac,cursor:"pointer",fontSize:14,fontWeight:800,lineHeight:1,padding:0,display:"flex",alignItems:"center",justifyContent:"center"}}>−</button>
                   <span style={{fontSize:12,fontWeight:700,minWidth:14,textAlign:"center"}}>{item.qty}</span>
                   <button onClick={()=>adj(item.id,1)} style={{width:24,height:24,borderRadius:"50%",border:"none",background:ac,color:"#fff",cursor:"pointer",fontSize:14,fontWeight:800,lineHeight:1,padding:0,display:"flex",alignItems:"center",justifyContent:"center"}}>+</button>
                 </div>
-                <div style={{fontSize:11,fontWeight:700,color:ac,minWidth:48,textAlign:"right",flexShrink:0}}>Rs.{(item.price*item.qty).toLocaleString()}</div>
+                <div style={{fontSize:11,fontWeight:700,color:ac,minWidth:46,textAlign:"right",flexShrink:0}}>Rs.{(item.price*item.qty).toLocaleString()}</div>
               </div>
             ))}
           </div>
           <div style={{padding:13,borderTop:"1px solid #f2f2f2"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:12}}>
               <span style={{fontSize:14,fontWeight:600,color:"#555"}}>Total</span>
-              <span style={{fontSize:22,fontWeight:800,color:ac}}>Rs. {total.toLocaleString()}</span>
+              <span style={{fontSize:22,fontWeight:800,color:ac}}>Rs. {subtotal.toLocaleString()}</span>
             </div>
-            <button onClick={()=>{setPayStep("choose");setCashAmt("");setScreen("payment");}} disabled={!cart.length}
+            <button onClick={()=>{setPayStep("choose");setCashAmt("");setDiscValue("");setShowDisc(false);setDiscType("percent");setScreen("payment");}} disabled={!cart.length}
               style={{width:"100%",padding:14,background:cart.length?gradBg:"#e8e8e8",border:"none",borderRadius:12,cursor:cart.length?"pointer":"not-allowed",fontSize:14,fontWeight:800,color:"#fff",letterSpacing:0.4}}>
               💳 Proceed to Pay
             </button>
@@ -1070,10 +1168,12 @@ export default function App() {
       <ClearModal/>
       <div style={P.topbar}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <div style={{width:42,height:42,borderRadius:12,background:"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24}}>🐓</div>
+          <div style={{width:44,height:44,borderRadius:12,overflow:"hidden",background:"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+            <Logo size={44} round={true}/>
+          </div>
           <div>
             <div style={{color:"#fff",fontWeight:800,fontSize:17,letterSpacing:2}}>CHEF ROOSTER</div>
-            <div style={{color:"rgba(255,255,255,0.5)",fontSize:9,letterSpacing:1}}>{ADDR1}</div>
+            <div style={{color:"rgba(255,255,255,0.5)",fontSize:9,letterSpacing:0.5}}>{ADDR1}</div>
           </div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -1097,21 +1197,18 @@ export default function App() {
           </button>
         ))}
       </div>
-
       {homeTab==="tables"&&<>
         <div style={{display:"flex",gap:16,padding:"8px 16px",background:"#fff",borderBottom:"1px solid #eee",flexShrink:0,alignItems:"center"}}>
           {[["Available",NUM_TABLES-occupiedTbls,"#16a34a"],["Occupied",occupiedTbls,RED]].map(([lb,n,col])=>(
             <div key={lb} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}>
-              <div style={{width:9,height:9,borderRadius:"50%",background:col}}/>
-              <span style={{color:"#777"}}>{lb}:</span>
-              <span style={{fontWeight:700,color:col}}>{n}</span>
+              <div style={{width:9,height:9,borderRadius:"50%",background:col}}/><span style={{color:"#777"}}>{lb}:</span><span style={{fontWeight:700,color:col}}>{n}</span>
             </div>
           ))}
           {liveTableRev>0&&<div style={{marginLeft:"auto",fontSize:12,color:RED,fontWeight:700}}>Live: Rs. {liveTableRev.toLocaleString()}</div>}
         </div>
         <div style={{flex:1,overflowY:"auto",padding:12,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(145px,1fr))",gap:10,alignContent:"start"}}>
           {tables.map(t=>{
-            const occ=t.cart.length>0,tTot=t.cart.reduce((s,i)=>s+i.price*i.qty,0),tCnt=t.cart.reduce((s,i)=>s+i.qty,0),time=elapsed(t.openedAt);
+            const occ=t.cart.length>0, tTot=t.cart.reduce((s,i)=>s+i.price*i.qty,0), tCnt=t.cart.reduce((s,i)=>s+i.qty,0), time=elapsed(t.openedAt);
             return (
               <div key={t.id} style={{background:"#fff",border:"2px solid "+(occ?RED:"#e5e5e5"),borderRadius:16,overflow:"hidden",boxShadow:occ?"0 4px 16px "+RED+"20":"0 1px 5px rgba(0,0,0,0.05)"}}>
                 <button onClick={()=>{setSelTbl(t.id);setMode("table");setCat(Object.keys(BASE_MENU)[0]);setScreen("pos");}}
@@ -1138,7 +1235,6 @@ export default function App() {
           })}
         </div>
       </>}
-
       {homeTab==="takeaway"&&<>
         <div style={{padding:"12px 14px",background:"#fff",borderBottom:"1px solid #eee",flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div style={{fontSize:12,color:"#888"}}>{takeaways.length} active order{takeaways.length!==1?"s":""}{liveTARev>0?" · Live: Rs."+liveTARev.toLocaleString():""}</div>
@@ -1156,7 +1252,7 @@ export default function App() {
           )}
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:10,alignContent:"start"}}>
             {takeaways.map(ta=>{
-              const tTot=ta.cart.reduce((s,i)=>s+i.price*i.qty,0),tCnt=ta.cart.reduce((s,i)=>s+i.qty,0),time=elapsed(ta.createdAt);
+              const tTot=ta.cart.reduce((s,i)=>s+i.price*i.qty,0), tCnt=ta.cart.reduce((s,i)=>s+i.qty,0), time=elapsed(ta.createdAt);
               return (
                 <div key={ta.id} style={{background:"#fff",border:"2px solid "+AMB,borderRadius:16,overflow:"hidden",boxShadow:"0 4px 18px "+AMB+"20"}}>
                   <button onClick={()=>{setSelTA(ta.id);setMode("takeaway");setCat(Object.keys(BASE_MENU)[0]);setScreen("pos");}}
@@ -1164,7 +1260,7 @@ export default function App() {
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
                       <div>
                         <div style={{fontSize:10,color:"#d97706",textTransform:"uppercase",letterSpacing:1,fontWeight:700,marginBottom:3}}>Takeaway</div>
-                        <div style={{fontSize:22,fontWeight:900,color:AMB,letterSpacing:-0.5}}>{ta.taNum}</div>
+                        <div style={{fontSize:22,fontWeight:900,color:AMB}}>{ta.taNum}</div>
                       </div>
                       <div style={{background:AMB+"18",borderRadius:8,padding:"4px 8px",textAlign:"right"}}>
                         <div style={{fontSize:13,fontWeight:800,color:AMB}}>Rs. {tTot.toLocaleString()}</div>
