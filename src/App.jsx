@@ -417,31 +417,47 @@ export default function App() {
     const isTbl=o.type==="Dine In";
     const badge=isTbl?"TABLE "+o.tableId+" — DINE IN":"TAKEAWAY — "+o.ref;
     const rows=o.items.map(it=>
-      "<div class='row'><span>"+it.name+" x"+it.qty+"</span><span>Rs."+((it.price||0)*it.qty).toLocaleString()+"</span></div>"
+      "<tr>"
+      +"<td style='padding:3px 4px 3px 0;font-size:12px'>"+it.name+" x"+it.qty+"</td>"
+      +"<td style='padding:3px 0;font-size:12px;text-align:right;white-space:nowrap'>Rs."+((it.price||0)*it.qty).toLocaleString()+"</td>"
+      +"</tr>"
     ).join("");
-    const discLine= (o.discountAmount>0)
-      ? "<div class='row' style='color:green'><span>Discount"+(o.discountType==="percent"?" ("+o.discountValue+"%)":"")+"</span><span>- Rs."+Number(o.discountAmount).toLocaleString()+"</span></div>"
-      : "";
-    const changeLine=o.paymentMethod==="cash"
-      ?"<div class='row'><span class='muted'>Cash Received</span><span>Rs."+Number(o.amountPaid).toLocaleString()+"</span></div>"
-       +"<div class='row'><span class='muted'>Change</span><span>Rs."+Number(o.change||0).toLocaleString()+"</span></div>"
+    const discLine=(o.discountAmount>0)
+      ?"<tr><td style='font-size:11px;color:#555'>Discount"+(o.discountType==="percent"?" ("+o.discountValue+"%)":"")+"</td>"
+        +"<td style='font-size:11px;text-align:right;color:#555'>-Rs."+Number(o.discountAmount).toLocaleString()+"</td></tr>"
       :"";
     return (
-      "<div style='text-align:center;padding-bottom:8px;border-bottom:1px dashed #999;margin-bottom:8px'>"
-      +"<h1>CHEF ROOSTER</h1>"
-      +"<div class='sub'>"+ADDR1+"</div>"
-      +"<div class='sub'>Tel: "+TEL+"</div>"
-      +"<div style='font-size:10px;font-weight:700;margin-top:5px;border:1px solid #000;padding:2px 8px;display:inline-block'>"+badge+"</div>"
-      +"<div style='font-size:10px;color:#666;margin-top:4px'>Order #"+o.orderNum+" | "+o.date+" "+o.time+"</div></div>"
-      +rows
-      +"<div class='dash'></div>"
-      +(o.subtotal!==o.total?"<div class='row'><span class='muted'>Subtotal</span><span>Rs."+Number(o.subtotal||o.total).toLocaleString()+"</span></div>":"")
-      +discLine
-      +"<div class='row' style='font-size:14px;font-weight:900;border-top:1px solid #000;margin-top:4px;padding-top:6px'><span>TOTAL</span><span>Rs."+Number(o.total).toLocaleString()+"</span></div>"
-      +"<div class='dash'></div>"
-      +"<div class='row'><span class='muted'>Payment</span><span>"+(o.paymentMethod==="cash"?"Cash":"Card / NFC")+"</span></div>"
-      +changeLine
-      +"<div style='text-align:center;margin-top:10px;font-size:10px;color:#666;border-top:1px dashed #999;padding-top:8px'>Thank you for visiting!<br>Chef Rooster · Sri Lanka</div>"
+      "<div style='text-align:center;padding-bottom:8px;border-bottom:1px dashed #000;margin-bottom:8px'>"
+      +"<div style='font-size:16px;font-weight:900;letter-spacing:2px'>CHEF ROOSTER</div>"
+      +"<div style='font-size:10px;margin-top:2px'>"+ADDR1+"</div>"
+      +"<div style='font-size:10px'>Tel: "+TEL+"</div>"
+      +"<div style='font-size:10px;font-weight:700;margin-top:4px'>"+badge+"</div>"
+      +"<div style='font-size:10px;color:#555;margin-top:2px'>Order #"+o.orderNum+" | "+o.date+" "+o.time+"</div>"
+      +"</div>"
+      +"<table style='width:100%;border-collapse:collapse'>"
+      +"<thead><tr>"
+      +"<th style='font-size:10px;text-align:left;padding:2px 4px 4px 0;border-bottom:1px dashed #000'>ITEM</th>"
+      +"<th style='font-size:10px;text-align:right;padding:2px 0 4px;border-bottom:1px dashed #000'>AMOUNT</th>"
+      +"</tr></thead>"
+      +"<tbody>"+rows+"</tbody>"
+      +"</table>"
+      +(o.discountAmount>0
+        ?"<table style='width:100%;border-collapse:collapse;margin-top:4px'>"
+          +"<tr><td style='font-size:11px;padding:3px 0'>Subtotal</td><td style='font-size:11px;text-align:right'>Rs."+Number(o.subtotal||o.total).toLocaleString()+"</td></tr>"
+          +discLine
+          +"</table>"
+        :"")
+      +"<div style='border-top:1px dashed #000;margin-top:6px;padding-top:6px;display:flex;justify-content:space-between;align-items:center'>"
+      +"<span style='font-size:14px;font-weight:900'>TOTAL</span>"
+      +"<span style='font-size:14px;font-weight:900'>Rs."+Number(o.total).toLocaleString()+"</span>"
+      +"</div>"
+      +"<div style='border-top:1px dashed #000;margin-top:8px;padding-top:6px;display:flex;justify-content:space-between'>"
+      +"<span style='font-size:11px'>Payment</span>"
+      +"<span style='font-size:11px;font-weight:700'>"+(o.paymentMethod==="cash"?"Cash":"Card / NFC")+"</span>"
+      +"</div>"
+      +"<div style='text-align:center;margin-top:10px;padding-top:6px;border-top:1px dashed #000;font-size:10px'>"
+      +"Thank you for visiting Chef Rooster!"
+      +"</div>"
     );
   };
 
