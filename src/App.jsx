@@ -178,10 +178,19 @@ export default function App() {
   const [rptLocked, setRptLocked] = useState(true);
   const [rptPin,    setRptPin]    = useState("");
   const [rptPinErr, setRptPinErr] = useState("");
-  const [customPrices, setCustomPrices] = useState({});
-  const [priceEdits,   setPriceEdits]   = useState({});
-  const [priceCat,     setPriceCat]     = useState(Object.keys(BASE_MENU)[0]);
-  const [priceSaved,   setPriceSaved]   = useState(false);
+  const [customPrices,  setCustomPrices]  = useState({});
+  const [priceEdits,    setPriceEdits]    = useState({});
+  const [priceCat,      setPriceCat]      = useState(Object.keys(BASE_MENU)[0]);
+  const [priceSaved,    setPriceSaved]    = useState(false);
+  // Price/menu admin lock
+  const [menuLocked,    setMenuLocked]    = useState(true);
+  const [menuPin,       setMenuPin]       = useState("");
+  const [menuPinErr,    setMenuPinErr]    = useState("");
+  // Custom menu items
+  const [customItems,   setCustomItems]   = useState({});
+  const [addItemCat,    setAddItemCat]    = useState(Object.keys(BASE_MENU)[0]);
+  const [newItemName,   setNewItemName]   = useState("");
+  const [newItemPrice,  setNewItemPrice]  = useState("");
   // Discount states
   const [discType,  setDiscType]  = useState("percent"); // "percent" | "fixed"
   const [discValue, setDiscValue] = useState("");
@@ -198,6 +207,7 @@ export default function App() {
     const u =localStorage.getItem("cr_url");       if(u) setSheetUrl(u);
     const th=localStorage.getItem("cr_till_hist"); if(th)setTillHist(JSON.parse(th));
     const cp=localStorage.getItem("cr_prices");    if(cp){const p=JSON.parse(cp);setCustomPrices(p);setPriceEdits(p);}
+    const ci=localStorage.getItem("cr_custom_items"); if(ci)setCustomItems(JSON.parse(ci));
     const tod=new Date().toLocaleDateString("en-GB");
     const ts=localStorage.getItem("cr_till_sess");
     const openNew=()=>{
@@ -225,6 +235,33 @@ export default function App() {
     setPriceSaved(true); setTimeout(()=>setPriceSaved(false),2000);
   };
   const resetPrices=()=>{setCustomPrices({});setPriceEdits({});localStorage.removeItem("cr_prices");};
+
+  // ── Menu admin lock ──────────────────────────────────────
+  const doMenuUnlock=()=>{
+    if(menuPin==="1998"){setMenuLocked(false);setMenuPin("");setMenuPinErr("");}
+    else setMenuPinErr("Incorrect password.");
+  };
+
+  // ── Custom item helpers ──────────────────────────────────
+  const saveCustomItems = ci => { setCustomItems(ci); localStorage.setItem("cr_custom_items",JSON.stringify(ci)); };
+
+  const addNewItem=()=>{
+    if(!newItemName.trim()||!newItemPrice) return;
+    const id="ci_"+Date.now();
+    const item={id,name:newItemName.trim(),price:parseInt(newItemPrice)||0,custom:true};
+    const updated={...customItems,[addItemCat]:[...(customItems[addItemCat]||[]),item]};
+    saveCustomItems(updated); setNewItemName(""); setNewItemPrice("");
+  };
+
+  const deleteCustomItem=(cat,id)=>{
+    const updated={...customItems,[cat]:(customItems[cat]||[]).filter(i=>i.id!==id)};
+    saveCustomItems(updated);
+  };
+
+  // Merged menu (base + custom items)
+  const MENU = Object.fromEntries(
+    Object.entries(BASE_MENU).map(([cat,items])=>[cat,[...items,...(customItems[cat]||[])]])
+  );
 
   // ── Discount calc ────────────────────────────────────────
   const cartSubtotal = useCallback((c)=>c.reduce((s,i)=>s+i.price*i.qty,0),[]);
@@ -297,7 +334,7 @@ export default function App() {
     const id=taCounter,newTA={id,taNum:taLabel(id),cart:[],createdAt:new Date().toISOString()};
     const nl=[...takeaways,newTA];setTakeaways(nl);saveTAs(nl);
     const nc=taCounter+1;setTaCounter(nc);localStorage.setItem("cr_tacounter",String(nc));
-    setSelTA(id);setMode("takeaway");setCat(Object.keys(BASE_MENU)[0]);setScreen("pos");
+    setSelTA(id);setMode("takeaway");setCat(Object.keys(MENU)[0]);setScreen("pos");
   };
 
   const finalize=(method,paid)=>{
@@ -410,10 +447,45 @@ export default function App() {
 
   const printOrder=o=>printWin(buildReceiptHTML(o));
 
+  // ── QZ Tray direct print ────────────────────────────────
+  const QZ_PRINTER = "XPrinter XP-80T";
+
+  const printDirect = useCallback(async (htmlContent) => {
+    try {
+      if (window.qz) {
+        if (!window.qz.websocket.isActive()) {
+          await window.qz.websocket.connect({ retries:3, delay:1 });
+        }
+        const cfg = window.qz.configs.create(QZ_PRINTER, {
+          size:    { width:80, height:null },
+          units:   "mm",
+          density: 203,
+          copies:  1,
+          jobName: "Chef Rooster Receipt",
+        });
+        await window.qz.print(cfg, [{
+          type:   "pixel",
+          format: "html",
+          flavor: "plain",
+          data:   htmlContent,
+        }]);
+      } else {
+        printWin(htmlContent);
+      }
+    } catch(err) {
+      console.warn("QZ print failed, falling back:", err.message);
+      printWin(htmlContent);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Auto-print when receipt screen loads ─────────────────
   useEffect(()=>{
     if(screen==="receipt"&&lastOrder){
-      const t=setTimeout(()=>printOrder(lastOrder),800);
+      const t=setTimeout(()=>{
+        const html=buildReceiptHTML(lastOrder);
+        printDirect(html);
+      },800);
       return ()=>clearTimeout(t);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -976,40 +1048,103 @@ export default function App() {
   // SETTINGS
   // ══════════════════════════════════════════════════════
   if(screen==="settings"){
-    const catItems=BASE_MENU[priceCat]||[];
+    const catItems=MENU[priceCat]||[];
     return (
       <div style={P.page}>
-        <TopBar onBack={()=>setScreen("home")}><span style={{color:"#fff",fontWeight:700,fontSize:16}}>🐓 Settings</span></TopBar>
+        <TopBar onBack={()=>{setMenuLocked(true);setScreen("home");}}><span style={{color:"#fff",fontWeight:700,fontSize:16}}>🐓 Settings</span></TopBar>
         <div style={{flex:1,overflowY:"auto",padding:14}}>
-          <div style={{...P.card,marginBottom:12}}>
-            <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>💲 Admin Price Management</p>
-            <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Edit prices. Changes apply to all new orders immediately.</p>
-            <div style={{overflowX:"auto",display:"flex",gap:6,marginBottom:14,paddingBottom:4}}>
-              {Object.keys(BASE_MENU).map(c=>(
-                <button key={c} onClick={()=>setPriceCat(c)}
-                  style={{padding:"6px 12px",border:"none",borderRadius:8,cursor:"pointer",whiteSpace:"nowrap",fontSize:11,fontWeight:700,background:priceCat===c?RED:"#f0f0f0",color:priceCat===c?"#fff":"#555",flexShrink:0}}>
-                  {CICONS[c]} {c}
-                </button>
-              ))}
+
+          {/* ── ADMIN MENU & PRICE MANAGEMENT ── */}
+          {menuLocked ? (
+            <div style={{...P.card,marginBottom:12}}>
+              <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>🔐 Admin Menu & Price Management</p>
+              <p style={{margin:"0 0 16px",fontSize:12,color:"#999"}}>Enter admin password to manage prices and menu items</p>
+              <input type="password" value={menuPin} onChange={e=>{setMenuPin(e.target.value);setMenuPinErr("");}}
+                onKeyDown={e=>e.key==="Enter"&&doMenuUnlock()} placeholder="Enter password" autoFocus
+                style={{width:"100%",padding:"12px 14px",borderRadius:10,border:"1.5px solid "+(menuPinErr?"#fca5a5":"#ddd"),fontSize:16,boxSizing:"border-box",outline:"none",textAlign:"center",letterSpacing:6,marginBottom:10}}/>
+              {menuPinErr&&<div style={{color:"#dc2626",fontSize:12,marginBottom:10,background:"#fef2f2",padding:"8px 12px",borderRadius:8,textAlign:"center"}}>{menuPinErr}</div>}
+              <button onClick={doMenuUnlock} style={{...P.btn,width:"100%",padding:13}}>Unlock →</button>
             </div>
-            {catItems.map(item=>{
-              const cur=priceEdits[item.id]!==undefined?priceEdits[item.id]:(customPrices[item.id]!==undefined?customPrices[item.id]:item.price);
-              return (
-                <div key={item.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f5f5f5"}}>
-                  <div style={{flex:1,fontSize:13,fontWeight:600}}>{item.name}</div>
-                  <div style={{fontSize:10,color:"#bbb",minWidth:60,textAlign:"right"}}>Default: Rs.{item.price}</div>
-                  <input type="number" value={cur}
-                    onChange={e=>{const v=parseInt(e.target.value)||0;setPriceEdits(p=>({...p,[item.id]:v}));}}
-                    style={{width:90,padding:"6px 8px",borderRadius:8,border:"1.5px solid "+(cur!==item.price?"#C8102E":"#ddd"),fontSize:13,fontWeight:700,outline:"none",textAlign:"right",color:cur!==item.price?RED:"#1a1a1a"}}
-                  />
+          ) : (
+            <>
+              {/* Price Editor */}
+              <div style={{...P.card,marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <p style={{margin:0,fontWeight:700,fontSize:14}}>💲 Edit Item Prices</p>
+                  <button onClick={()=>{setMenuLocked(true);setMenuPin("");setMenuPinErr("");}} style={{fontSize:11,color:"#aaa",background:"none",border:"none",cursor:"pointer"}}>🔒 Lock</button>
                 </div>
-              );
-            })}
-            <div style={{display:"flex",gap:8,marginTop:14}}>
-              <button onClick={savePrices} style={{...P.btn,flex:1,padding:12,fontSize:13,background:priceSaved?"#16a34a":RED}}>{priceSaved?"✅ Saved!":"💾 Save Prices"}</button>
-              <button onClick={()=>{if(window.confirm("Reset ALL prices to default?"))resetPrices();}} style={{...P.btn,padding:12,fontSize:13,background:"#64748b"}}>Reset All</button>
-            </div>
-          </div>
+                <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Changed prices show in red. Applies to all new orders.</p>
+                <div style={{overflowX:"auto",display:"flex",gap:6,marginBottom:14,paddingBottom:4}}>
+                  {Object.keys(BASE_MENU).map(c=>(
+                    <button key={c} onClick={()=>setPriceCat(c)}
+                      style={{padding:"6px 12px",border:"none",borderRadius:8,cursor:"pointer",whiteSpace:"nowrap",fontSize:11,fontWeight:700,background:priceCat===c?RED:"#f0f0f0",color:priceCat===c?"#fff":"#555",flexShrink:0}}>
+                      {CICONS[c]} {c}
+                    </button>
+                  ))}
+                </div>
+                {catItems.map(item=>{
+                  const cur=priceEdits[item.id]!==undefined?priceEdits[item.id]:(customPrices[item.id]!==undefined?customPrices[item.id]:item.price);
+                  return (
+                    <div key={item.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f5f5f5"}}>
+                      <div style={{flex:1,fontSize:13,fontWeight:600}}>{item.name}{item.custom&&<span style={{marginLeft:5,fontSize:9,background:"#e0f2fe",color:"#0369a1",borderRadius:4,padding:"1px 5px",fontWeight:700}}>CUSTOM</span>}</div>
+                      <div style={{fontSize:10,color:"#bbb",minWidth:55,textAlign:"right"}}>Base: Rs.{item.price}</div>
+                      <input type="number" value={cur}
+                        onChange={e=>{const v=parseInt(e.target.value)||0;setPriceEdits(p=>({...p,[item.id]:v}));}}
+                        style={{width:85,padding:"6px 8px",borderRadius:8,border:"1.5px solid "+(cur!==item.price?"#C8102E":"#ddd"),fontSize:13,fontWeight:700,outline:"none",textAlign:"right",color:cur!==item.price?RED:"#1a1a1a"}}/>
+                    </div>
+                  );
+                })}
+                <div style={{display:"flex",gap:8,marginTop:14}}>
+                  <button onClick={savePrices} style={{...P.btn,flex:1,padding:12,fontSize:13,background:priceSaved?"#16a34a":RED}}>{priceSaved?"✅ Saved!":"💾 Save Prices"}</button>
+                  <button onClick={()=>{if(window.confirm("Reset ALL prices to default?"))resetPrices();}} style={{...P.btn,padding:12,fontSize:13,background:"#64748b"}}>Reset</button>
+                </div>
+              </div>
+
+              {/* Add New Item */}
+              <div style={{...P.card,marginBottom:12}}>
+                <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>➕ Add New Menu Item</p>
+                <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Add custom items to any category</p>
+                {/* Category picker */}
+                <div style={{overflowX:"auto",display:"flex",gap:6,marginBottom:14,paddingBottom:4}}>
+                  {Object.keys(BASE_MENU).map(c=>(
+                    <button key={c} onClick={()=>setAddItemCat(c)}
+                      style={{padding:"6px 12px",border:"none",borderRadius:8,cursor:"pointer",whiteSpace:"nowrap",fontSize:11,fontWeight:700,background:addItemCat===c?"#059669":"#f0f0f0",color:addItemCat===c?"#fff":"#555",flexShrink:0}}>
+                      {CICONS[c]} {c}
+                    </button>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:10}}>
+                  <input value={newItemName} onChange={e=>setNewItemName(e.target.value)}
+                    placeholder="Item name (e.g. Large Fries)" onKeyDown={e=>e.key==="Enter"&&addNewItem()}
+                    style={{flex:2,padding:"10px 12px",borderRadius:10,border:"1.5px solid #ddd",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
+                  <input type="number" value={newItemPrice} onChange={e=>setNewItemPrice(e.target.value)}
+                    placeholder="Price" onKeyDown={e=>e.key==="Enter"&&addNewItem()}
+                    style={{flex:1,padding:"10px 12px",borderRadius:10,border:"1.5px solid #ddd",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
+                </div>
+                <button onClick={addNewItem} disabled={!newItemName.trim()||!newItemPrice}
+                  style={{...P.btn,width:"100%",padding:12,fontSize:13,background:"#059669",opacity:(!newItemName.trim()||!newItemPrice)?0.4:1}}>
+                  ➕ Add to {addItemCat}
+                </button>
+                {/* Existing custom items */}
+                {Object.entries(customItems).some(([,arr])=>arr&&arr.length>0)&&<>
+                  <p style={{margin:"16px 0 10px",fontWeight:700,fontSize:13,color:"#555"}}>Custom Items Added</p>
+                  {Object.entries(customItems).map(([cat,items])=>
+                    (items||[]).map(item=>(
+                      <div key={item.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:"#f0fdf4",borderRadius:10,marginBottom:6}}>
+                        <div style={{fontSize:11,fontWeight:600,color:"#059669",minWidth:60}}>{CICONS[cat]} {cat}</div>
+                        <div style={{flex:1,fontSize:13,fontWeight:600}}>{item.name}</div>
+                        <div style={{fontSize:13,fontWeight:700,color:"#059669"}}>Rs.{item.price.toLocaleString()}</div>
+                        <button onClick={()=>{if(window.confirm("Delete "+item.name+"?"))deleteCustomItem(cat,item.id);}}
+                          style={{width:26,height:26,borderRadius:"50%",background:"#fee2e2",border:"none",cursor:"pointer",fontSize:13,color:"#dc2626",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                          ✕
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </>}
+              </div>
+            </>
+          )}
           <div style={{...P.card,marginBottom:12}}>
             <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>☁️ Google Sheets Sync</p>
             <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Paste your Apps Script Web App URL below</p>
@@ -1030,12 +1165,20 @@ export default function App() {
             <div style={{background:"#0d1117",borderRadius:10,padding:14,fontSize:10.5,fontFamily:"'Courier New',monospace",color:"#7ee787",lineHeight:1.9,overflowX:"auto",whiteSpace:"pre"}}>{SCRIPT_CODE}</div>
           </div>
           <div style={{...P.card,marginBottom:12}}>
-            <p style={{margin:"0 0 10px",fontWeight:700,fontSize:14}}>🖨️ Receipt Printer Setup</p>
+            <p style={{margin:"0 0 10px",fontWeight:700,fontSize:14}}>🖨️ XPrinter XP-80T Setup</p>
             <div style={{fontSize:12,color:"#555",lineHeight:2}}>
-              <b>Step 1:</b> Connect your thermal receipt printer to the tablet<br/>
-              <b>Step 2:</b> When the print dialog opens after payment, select your printer<br/>
-              <b>Step 3:</b> Tick <b>"Remember this choice"</b> or set it as default<br/>
-              <b>Step 4:</b> From then on, receipts print automatically without any dialog
+              <b>Step 1:</b> Download & install <b>QZ Tray</b> from <b>qz.io</b> (free)<br/>
+              <b>Step 2:</b> Install XP-80T driver from <b>xprinter.net</b><br/>
+              <b>Step 3:</b> Connect USB cable from XP-80T to your computer<br/>
+              <b>Step 4:</b> Start QZ Tray — it sits in the system tray (bottom right)<br/>
+              <b>Step 5:</b> Open this app — QZ connects automatically<br/>
+              <b>Step 6:</b> First print: allow QZ Tray when Chrome asks<br/>
+              <b>Step 7:</b> Check printer name below matches Control Panel exactly
+            </div>
+            <div style={{marginTop:12,padding:"10px 14px",background:"#f9f9f9",borderRadius:10,fontSize:12}}>
+              <span style={{color:"#888"}}>Current printer name in code: </span>
+              <span style={{fontWeight:700,color:RED}}>XPrinter XP-80T</span><br/>
+              <span style={{color:"#aaa",fontSize:11}}>Must match exactly: Windows key → Run → control printers → right-click → See printer name</span>
             </div>
           </div>
           <div style={{...P.card,marginBottom:12}}>
@@ -1085,7 +1228,7 @@ export default function App() {
             </div>
           </div>
           <div style={{background:"#fff",borderBottom:"1px solid #eee",overflowX:"auto",display:"flex",flexShrink:0,scrollbarWidth:"none"}}>
-            {Object.keys(BASE_MENU).map(c=>(
+            {Object.keys(MENU).map(c=>(
               <button key={c} onClick={()=>setCat(c)}
                 style={{padding:"10px 12px",border:"none",background:"transparent",cursor:"pointer",whiteSpace:"nowrap",fontSize:11,fontWeight:700,color:cat===c?ac:"#888",borderBottom:"3px solid "+(cat===c?ac:"transparent")}}>
                 {CICONS[c]} {c}
@@ -1093,7 +1236,7 @@ export default function App() {
             ))}
           </div>
           <div style={{flex:1,overflowY:"auto",padding:10,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(128px,1fr))",gap:8,alignContent:"start"}}>
-            {BASE_MENU[cat].map(item=>{
+            {MENU[cat].map(item=>{
               const inCart=cart.find(i=>i.id===item.id);
               const dp=getPrice(item);
               return (
@@ -1211,7 +1354,7 @@ export default function App() {
             const occ=t.cart.length>0, tTot=t.cart.reduce((s,i)=>s+i.price*i.qty,0), tCnt=t.cart.reduce((s,i)=>s+i.qty,0), time=elapsed(t.openedAt);
             return (
               <div key={t.id} style={{background:"#fff",border:"2px solid "+(occ?RED:"#e5e5e5"),borderRadius:16,overflow:"hidden",boxShadow:occ?"0 4px 16px "+RED+"20":"0 1px 5px rgba(0,0,0,0.05)"}}>
-                <button onClick={()=>{setSelTbl(t.id);setMode("table");setCat(Object.keys(BASE_MENU)[0]);setScreen("pos");}}
+                <button onClick={()=>{setSelTbl(t.id);setMode("table");setCat(Object.keys(MENU)[0]);setScreen("pos");}}
                   style={{width:"100%",padding:"14px 13px 10px",cursor:"pointer",textAlign:"left",background:"transparent",border:"none"}}>
                   <div style={{position:"relative"}}>
                     <div style={{position:"absolute",top:0,right:0,width:9,height:9,borderRadius:"50%",background:occ?RED:"#22c55e"}}/>
