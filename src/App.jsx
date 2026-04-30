@@ -464,7 +464,7 @@ export default function App() {
   const printOrder=o=>printWin(buildReceiptHTML(o));
 
   // ── QZ Tray direct print ────────────────────────────────
-  const QZ_PRINTER = "XPrinter XP-80T";
+  const QZ_PRINTER = "EPSON TM-m30II Receipt";
 
   const printDirect = useCallback(async (htmlContent) => {
     try {
