@@ -143,7 +143,7 @@ function buildESCPOS(o) {
   var CENTER = E+'a\x01';
   var LEFT   = E+'a\x00';
   var CUT    = G+'V\x41\x03';
-  var W      = 42;
+  var W      = 32;
   var DASH   = new Array(W+1).join('-');
 
   function row(left, right) {
