@@ -143,7 +143,7 @@ function buildESCPOS(o) {
   var CENTER = E+'a\x01';
   var LEFT   = E+'a\x00';
   var CUT    = G+'V\x41\x03';
-  var W      = 32;
+  var W      = 42;
   var DASH   = new Array(W+1).join('-');
 
   function row(left, right) {
@@ -311,6 +311,10 @@ export default function App() {
   var s49= useState("percent");    var discType  =s49[0];var setDiscType  =s49[1];
   var s50= useState("");           var discValue =s50[0];var setDiscValue =s50[1];
   var s51= useState(false);        var showDisc  =s51[0];var setShowDisc  =s51[1];
+  // Custom categories
+  var s52= useState([]);           var customCats  =s52[0];var setCustomCats  =s52[1];
+  var s53= useState("");           var newCatName  =s53[0];var setNewCatName  =s53[1];
+  var s54= useState("🍽️");        var newCatIcon  =s54[0];var setNewCatIcon  =s54[1];
 
   // ── Load ─────────────────────────────────────────────────
   useEffect(function(){
@@ -324,6 +328,7 @@ export default function App() {
     var th=localStorage.getItem("cr_till_hist"); if(th)setTillHist(JSON.parse(th));
     var cp=localStorage.getItem("cr_prices");    if(cp){var pp=JSON.parse(cp);setCustomPrices(pp);setPriceEdits(pp);}
     var ci=localStorage.getItem("cr_custom_items"); if(ci)setCustomItems(JSON.parse(ci));
+    var cc=localStorage.getItem("cr_custom_cats");  if(cc)setCustomCats(JSON.parse(cc));
     var tod=new Date().toLocaleDateString("en-GB");
     var ts=localStorage.getItem("cr_till_sess");
     function openNew(){
@@ -579,42 +584,6 @@ export default function App() {
       +"Printed: "+new Date().toLocaleString("en-GB")+"</div>"
     );
   }
-
-  // ── QZ Tray / ESC/POS direct print ───────────────────────
-  var printDirect = useCallback(function(o){
-    var promise;
-    try {
-      if(window.qz) {
-        var isActive = window.qz.websocket.isActive();
-        var connectPromise = isActive
-          ? Promise.resolve()
-          : window.qz.websocket.connect({retries:3,delay:1});
-        promise = connectPromise.then(function(){
-          var cfg = window.qz.configs.create(QZ_PRINTER);
-          return window.qz.print(cfg,[{type:"raw",format:"plain",flavor:"plain",data:buildESCPOS(o)}]);
-        }).catch(function(err){
-          console.warn("QZ error:",err.message);
-          printWin(buildReceiptHTML(o));
-        });
-      } else {
-        printWin(buildReceiptHTML(o));
-        promise = Promise.resolve();
-      }
-    } catch(err) {
-      console.warn("QZ error:",err.message);
-      printWin(buildReceiptHTML(o));
-      promise = Promise.resolve();
-    }
-    return promise;
-  },[]);
-
-  // ── Auto-print on receipt screen ─────────────────────────
-  useEffect(function(){
-    if(screen==="receipt"&&lastOrder){
-      var t=setTimeout(function(){printDirect(lastOrder);},800);
-      return function(){clearTimeout(t);};
-    }
-  },[screen,lastOrder,printDirect]);
 
   // ── Sync ─────────────────────────────────────────────────
   function sync(){
@@ -1220,14 +1189,44 @@ export default function App() {
                 </div>
               </div>
               <div style={{...P.card,marginBottom:12}}>
-                <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>➕ Add New Menu Item</p>
-                <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Add custom items to any category</p>
+                <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>📂 Add New Menu Category</p>
+                <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Create a new category that appears in the POS</p>
+                <div style={{display:"flex",gap:8,marginBottom:10}}>
+                  <input value={newCatIcon} onChange={function(e){setNewCatIcon(e.target.value);}} placeholder="🍽️"
+                    style={{width:52,padding:"10px 6px",borderRadius:10,border:"1.5px solid #ddd",fontSize:20,boxSizing:"border-box",outline:"none",textAlign:"center"}}/>
+                  <input value={newCatName} onChange={function(e){setNewCatName(e.target.value);}} placeholder="e.g. Hot Dogs, Desserts, Wraps" onKeyDown={function(e){if(e.key==="Enter")addNewCat();}}
+                    style={{flex:1,padding:"10px 12px",borderRadius:10,border:"1.5px solid #ddd",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
+                </div>
+                <button onClick={addNewCat} disabled={!newCatName.trim()}
+                  style={{...P.btn,width:"100%",padding:12,fontSize:13,background:"#7c3aed",opacity:!newCatName.trim()?0.4:1}}>
+                  📂 Add Category
+                </button>
+                {customCats.length>0&&(
+                  <>
+                    <p style={{margin:"16px 0 10px",fontWeight:700,fontSize:13,color:"#555"}}>Your Custom Categories</p>
+                    {customCats.map(function(cc){
+                      return (
+                        <div key={cc.name} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:"#f5f3ff",borderRadius:10,marginBottom:6}}>
+                          <span style={{fontSize:18}}>{cc.icon}</span>
+                          <div style={{flex:1,fontSize:13,fontWeight:600}}>{cc.name}</div>
+                          <div style={{fontSize:11,color:"#7c3aed"}}>{(customItems[cc.name]||[]).length} items</div>
+                          <button onClick={function(){if(window.confirm("Delete "+cc.name+" category and all its items?"))deleteCat(cc.name);}}
+                            style={{width:26,height:26,borderRadius:"50%",background:"#fee2e2",border:"none",cursor:"pointer",fontSize:13,color:"#dc2626",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>✕</button>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+              <div style={{...P.card,marginBottom:12}}>
+                <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>➕ Add Items to a Category</p>
+                <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Add items to any existing or custom category</p>
                 <div style={{overflowX:"auto",display:"flex",gap:6,marginBottom:14,paddingBottom:4}}>
-                  {Object.keys(BASE_MENU).map(function(c){
+                  {Object.keys(MENU).map(function(c){
                     return (
                       <button key={c} onClick={function(){setAddItemCat(c);}}
                         style={{padding:"6px 12px",border:"none",borderRadius:8,cursor:"pointer",whiteSpace:"nowrap",fontSize:11,fontWeight:700,background:addItemCat===c?"#059669":"#f0f0f0",color:addItemCat===c?"#fff":"#555",flexShrink:0}}>
-                        {CICONS[c]} {c}
+                        {getCatIcon(c)} {c}
                       </button>
                     );
                   })}
@@ -1244,13 +1243,13 @@ export default function App() {
                 </button>
                 {Object.entries(customItems).some(function(e){return e[1]&&e[1].length>0;})&&(
                   <>
-                    <p style={{margin:"16px 0 10px",fontWeight:700,fontSize:13,color:"#555"}}>Custom Items Added</p>
+                    <p style={{margin:"16px 0 10px",fontWeight:700,fontSize:13,color:"#555"}}>All Custom Items</p>
                     {Object.entries(customItems).map(function(entry){
                       var c=entry[0]; var items=entry[1]||[];
                       return items.map(function(item){
                         return (
                           <div key={item.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:"#f0fdf4",borderRadius:10,marginBottom:6}}>
-                            <div style={{fontSize:11,fontWeight:600,color:"#059669",minWidth:60}}>{CICONS[c]} {c}</div>
+                            <div style={{fontSize:11,fontWeight:600,color:"#059669",minWidth:60}}>{getCatIcon(c)} {c}</div>
                             <div style={{flex:1,fontSize:13,fontWeight:600}}>{item.name}</div>
                             <div style={{fontSize:13,fontWeight:700,color:"#059669"}}>Rs.{item.price.toLocaleString()}</div>
                             <button onClick={function(){if(window.confirm("Delete "+item.name+"?"))deleteCustomItem(c,item.id);}}
