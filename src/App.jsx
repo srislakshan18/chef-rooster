@@ -315,6 +315,7 @@ export default function App() {
   var s52= useState([]);           var customCats  =s52[0];var setCustomCats  =s52[1];
   var s53= useState("");           var newCatName  =s53[0];var setNewCatName  =s53[1];
   var s54= useState("🍽️");        var newCatIcon  =s54[0];var setNewCatIcon  =s54[1];
+  var s55= useState(null);          var expandedCat =s55[0];var setExpandedCat =s55[1];
 
   // ── Load ─────────────────────────────────────────────────
   useEffect(function(){
@@ -352,6 +353,9 @@ export default function App() {
   Object.keys(BASE_MENU).forEach(function(cat){
     MENU[cat] = BASE_MENU[cat].concat(customItems[cat]||[]);
   });
+  customCats.forEach(function(cc){
+    if(!MENU[cc.name]) MENU[cc.name] = customItems[cc.name]||[];
+  });
 
   // ── Price helpers ─────────────────────────────────────────
   function getPrice(item){ return customPrices[item.id]!==undefined ? customPrices[item.id] : item.price; }
@@ -386,6 +390,30 @@ export default function App() {
     updated[c] = (customItems[c]||[]).filter(function(i){return i.id!==id;});
     saveCustomItems(updated);
   }
+
+  function getCatIcon(c){
+    if(CICONS[c]) return CICONS[c];
+    var cc = customCats.find(function(x){return x.name===c;});
+    return cc ? cc.icon : "🍽️";
+  }
+
+  function addNewCat(){
+    if(!newCatName.trim()) return;
+    var nc = {name:newCatName.trim(), icon:newCatIcon||"🍽️"};
+    if(MENU[nc.name]||customCats.find(function(x){return x.name===nc.name;})) return;
+    var updated = customCats.concat([nc]);
+    setCustomCats(updated); localStorage.setItem("cr_custom_cats",JSON.stringify(updated));
+    setExpandedCat(nc.name); setNewCatName(""); setNewCatIcon("🍽️");
+  }
+
+  function deleteCat(name){
+    var updated = customCats.filter(function(c){return c.name!==name;});
+    setCustomCats(updated); localStorage.setItem("cr_custom_cats",JSON.stringify(updated));
+    var ci = Object.assign({},customItems); delete ci[name]; saveCustomItems(ci);
+    if(expandedCat===name) setExpandedCat(null);
+  }
+
+  function printDirect(order){ printWin(buildReceiptHTML(order)); }
 
   // ── Reports lock ─────────────────────────────────────────
   function doRptUnlock(){
@@ -1189,77 +1217,81 @@ export default function App() {
                 </div>
               </div>
               <div style={{...P.card,marginBottom:12}}>
-                <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>📂 Add New Menu Category</p>
-                <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Create a new category that appears in the POS</p>
-                <div style={{display:"flex",gap:8,marginBottom:10}}>
+                <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>📂 Custom Categories</p>
+                <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Create categories, add items, and edit prices — all in one place</p>
+                <div style={{display:"flex",gap:8,marginBottom:12}}>
                   <input value={newCatIcon} onChange={function(e){setNewCatIcon(e.target.value);}} placeholder="🍽️"
                     style={{width:52,padding:"10px 6px",borderRadius:10,border:"1.5px solid #ddd",fontSize:20,boxSizing:"border-box",outline:"none",textAlign:"center"}}/>
                   <input value={newCatName} onChange={function(e){setNewCatName(e.target.value);}} placeholder="e.g. Hot Dogs, Desserts, Wraps" onKeyDown={function(e){if(e.key==="Enter")addNewCat();}}
                     style={{flex:1,padding:"10px 12px",borderRadius:10,border:"1.5px solid #ddd",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
+                  <button onClick={addNewCat} disabled={!newCatName.trim()}
+                    style={{...P.btn,padding:"10px 16px",fontSize:13,background:"#7c3aed",opacity:!newCatName.trim()?0.4:1,flexShrink:0}}>
+                    + Add
+                  </button>
                 </div>
-                <button onClick={addNewCat} disabled={!newCatName.trim()}
-                  style={{...P.btn,width:"100%",padding:12,fontSize:13,background:"#7c3aed",opacity:!newCatName.trim()?0.4:1}}>
-                  📂 Add Category
-                </button>
-                {customCats.length>0&&(
-                  <>
-                    <p style={{margin:"16px 0 10px",fontWeight:700,fontSize:13,color:"#555"}}>Your Custom Categories</p>
-                    {customCats.map(function(cc){
-                      return (
-                        <div key={cc.name} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:"#f5f3ff",borderRadius:10,marginBottom:6}}>
-                          <span style={{fontSize:18}}>{cc.icon}</span>
-                          <div style={{flex:1,fontSize:13,fontWeight:600}}>{cc.name}</div>
-                          <div style={{fontSize:11,color:"#7c3aed"}}>{(customItems[cc.name]||[]).length} items</div>
-                          <button onClick={function(){if(window.confirm("Delete "+cc.name+" category and all its items?"))deleteCat(cc.name);}}
-                            style={{width:26,height:26,borderRadius:"50%",background:"#fee2e2",border:"none",cursor:"pointer",fontSize:13,color:"#dc2626",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>✕</button>
-                        </div>
-                      );
-                    })}
-                  </>
+                {customCats.length===0&&(
+                  <div style={{textAlign:"center",padding:"22px 0",color:"#ccc"}}>
+                    <div style={{fontSize:32,marginBottom:6}}>📂</div>
+                    <div style={{fontSize:12}}>No custom categories yet. Add one above.</div>
+                  </div>
                 )}
-              </div>
-              <div style={{...P.card,marginBottom:12}}>
-                <p style={{margin:"0 0 4px",fontWeight:700,fontSize:14}}>➕ Add Items to a Category</p>
-                <p style={{margin:"0 0 14px",fontSize:12,color:"#999"}}>Add items to any existing or custom category</p>
-                <div style={{overflowX:"auto",display:"flex",gap:6,marginBottom:14,paddingBottom:4}}>
-                  {Object.keys(MENU).map(function(c){
-                    return (
-                      <button key={c} onClick={function(){setAddItemCat(c);}}
-                        style={{padding:"6px 12px",border:"none",borderRadius:8,cursor:"pointer",whiteSpace:"nowrap",fontSize:11,fontWeight:700,background:addItemCat===c?"#059669":"#f0f0f0",color:addItemCat===c?"#fff":"#555",flexShrink:0}}>
-                        {getCatIcon(c)} {c}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div style={{display:"flex",gap:8,marginBottom:10}}>
-                  <input value={newItemName} onChange={function(e){setNewItemName(e.target.value);}} placeholder="Item name e.g. Large Fries" onKeyDown={function(e){if(e.key==="Enter")addNewItem();}}
-                    style={{flex:2,padding:"10px 12px",borderRadius:10,border:"1.5px solid #ddd",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
-                  <input type="number" value={newItemPrice} onChange={function(e){setNewItemPrice(e.target.value);}} placeholder="Price" onKeyDown={function(e){if(e.key==="Enter")addNewItem();}}
-                    style={{flex:1,padding:"10px 12px",borderRadius:10,border:"1.5px solid #ddd",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
-                </div>
-                <button onClick={addNewItem} disabled={!newItemName.trim()||!newItemPrice}
-                  style={{...P.btn,width:"100%",padding:12,fontSize:13,background:"#059669",opacity:(!newItemName.trim()||!newItemPrice)?0.4:1}}>
-                  ➕ Add to {addItemCat}
-                </button>
-                {Object.entries(customItems).some(function(e){return e[1]&&e[1].length>0;})&&(
-                  <>
-                    <p style={{margin:"16px 0 10px",fontWeight:700,fontSize:13,color:"#555"}}>All Custom Items</p>
-                    {Object.entries(customItems).map(function(entry){
-                      var c=entry[0]; var items=entry[1]||[];
-                      return items.map(function(item){
-                        return (
-                          <div key={item.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:"#f0fdf4",borderRadius:10,marginBottom:6}}>
-                            <div style={{fontSize:11,fontWeight:600,color:"#059669",minWidth:60}}>{getCatIcon(c)} {c}</div>
-                            <div style={{flex:1,fontSize:13,fontWeight:600}}>{item.name}</div>
-                            <div style={{fontSize:13,fontWeight:700,color:"#059669"}}>Rs.{item.price.toLocaleString()}</div>
-                            <button onClick={function(){if(window.confirm("Delete "+item.name+"?"))deleteCustomItem(c,item.id);}}
-                              style={{width:26,height:26,borderRadius:"50%",background:"#fee2e2",border:"none",cursor:"pointer",fontSize:13,color:"#dc2626",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>✕</button>
+                {customCats.map(function(cc){
+                  var isExp=expandedCat===cc.name;
+                  var catItems=customItems[cc.name]||[];
+                  return (
+                    <div key={cc.name} style={{marginBottom:8}}>
+                      <div onClick={function(){setExpandedCat(isExp?null:cc.name);setNewItemName("");setNewItemPrice("");}}
+                        style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",background:isExp?"#f5f3ff":"#fafafa",borderRadius:isExp?"10px 10px 0 0":"10px",border:"1.5px solid "+(isExp?"#7c3aed":"#e5e5e5"),cursor:"pointer"}}>
+                        <span style={{fontSize:18}}>{cc.icon}</span>
+                        <div style={{flex:1,fontSize:13,fontWeight:700}}>{cc.name}</div>
+                        <div style={{fontSize:11,color:"#7c3aed",fontWeight:600,marginRight:4}}>{catItems.length} item{catItems.length!==1?"s":""}</div>
+                        <span style={{fontSize:11,color:"#999"}}>{isExp?"▲":"▼"}</span>
+                        <button onClick={function(e){e.stopPropagation();if(window.confirm("Delete "+cc.name+" and all its items?"))deleteCat(cc.name);}}
+                          style={{width:26,height:26,borderRadius:"50%",background:"#fee2e2",border:"none",cursor:"pointer",fontSize:12,color:"#dc2626",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginLeft:6}}>✕</button>
+                      </div>
+                      {isExp&&(
+                        <div style={{border:"1.5px solid #7c3aed",borderTop:"none",borderRadius:"0 0 10px 10px",padding:"12px 14px",background:"#faf5ff"}}>
+                          {catItems.length>0?(
+                            <div style={{marginBottom:12}}>
+                              <div style={{fontSize:11,fontWeight:700,color:"#6d28d9",marginBottom:8,textTransform:"uppercase",letterSpacing:0.5}}>Items &amp; Prices</div>
+                              {catItems.map(function(item){
+                                var cur=priceEdits[item.id]!==undefined?priceEdits[item.id]:(customPrices[item.id]!==undefined?customPrices[item.id]:item.price);
+                                return (
+                                  <div key={item.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #ede9fe"}}>
+                                    <div style={{flex:1,fontSize:13,fontWeight:600,color:"#1a1a1a"}}>{item.name}</div>
+                                    <div style={{fontSize:10,color:"#c4b5fd",minWidth:60,textAlign:"right"}}>Base: Rs.{item.price}</div>
+                                    <input type="number" value={cur}
+                                      onChange={function(e){var v=parseInt(e.target.value)||0;setPriceEdits(function(p){var np=Object.assign({},p);np[item.id]=v;return np;});}}
+                                      style={{width:90,padding:"6px 8px",borderRadius:8,border:"1.5px solid "+(cur!==item.price?"#7c3aed":"#ddd"),fontSize:13,fontWeight:700,outline:"none",textAlign:"right",color:cur!==item.price?"#7c3aed":"#1a1a1a"}}/>
+                                    <button onClick={function(){if(window.confirm("Delete "+item.name+"?"))deleteCustomItem(cc.name,item.id);}}
+                                      style={{width:26,height:26,borderRadius:"50%",background:"#fee2e2",border:"none",cursor:"pointer",fontSize:12,color:"#dc2626",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>✕</button>
+                                  </div>
+                                );
+                              })}
+                              <button onClick={savePrices} style={{...P.btn,width:"100%",padding:9,fontSize:12,marginTop:10,background:priceSaved?"#16a34a":"#7c3aed"}}>{priceSaved?"✅ Saved!":"💾 Save Price Changes"}</button>
+                            </div>
+                          ):(
+                            <p style={{fontSize:12,color:"#aaa",textAlign:"center",margin:"0 0 12px"}}>No items yet — add one below.</p>
+                          )}
+                          <div style={{background:"#ede9fe",borderRadius:10,padding:"10px 12px"}}>
+                            <div style={{fontSize:11,fontWeight:700,color:"#6d28d9",marginBottom:8}}>➕ Add Item to {cc.name}</div>
+                            <div style={{display:"flex",gap:6,marginBottom:8}}>
+                              <input value={newItemName} onChange={function(e){setNewItemName(e.target.value);}} placeholder="Item name"
+                                style={{flex:2,padding:"8px 10px",borderRadius:8,border:"1.5px solid #ddd",fontSize:13,outline:"none",boxSizing:"border-box",background:"#fff"}}/>
+                              <input type="number" value={newItemPrice} onChange={function(e){setNewItemPrice(e.target.value);}} placeholder="Price"
+                                style={{flex:1,padding:"8px 10px",borderRadius:8,border:"1.5px solid #ddd",fontSize:13,outline:"none",boxSizing:"border-box",background:"#fff"}}/>
+                            </div>
+                            <button onClick={function(){if(!newItemName.trim()||!newItemPrice)return;var id="ci_"+Date.now();var it={id:id,name:newItemName.trim(),price:parseInt(newItemPrice)||0,custom:true};var upd=Object.assign({},customItems);upd[cc.name]=(customItems[cc.name]||[]).concat([it]);saveCustomItems(upd);setNewItemName("");setNewItemPrice("");}}
+                              disabled={!newItemName.trim()||!newItemPrice}
+                              style={{...P.btn,width:"100%",padding:9,fontSize:12,background:"#059669",opacity:(!newItemName.trim()||!newItemPrice)?0.4:1}}>
+                              ➕ Add Item
+                            </button>
                           </div>
-                        );
-                      });
-                    })}
-                  </>
-                )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}
